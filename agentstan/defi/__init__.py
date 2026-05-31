@@ -18,6 +18,7 @@ from .config import (
 )
 from .engine import LendingMarket
 from .sweep import sweep, frontier, grid, run_config
+from .report import stress_report, write_report
 
 __all__ = [
     "LendingMarket",
@@ -31,4 +32,6 @@ __all__ = [
     "frontier",
     "grid",
     "run_config",
+    "stress_report",
+    "write_report",
 ]

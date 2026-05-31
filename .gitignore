@@ -208,6 +208,9 @@ simulation_*.py
 temp_*.py
 scratch_*.py
 
+# Generated DeFi report output (example artifact, regenerable)
+defi_stress_report.md
+
 # Generated visualization files
 visualizations/
 plots/
