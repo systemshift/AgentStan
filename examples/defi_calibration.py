@@ -11,8 +11,10 @@ is robust across the stated assumptions, not a fitted coincidence.
 
 import copy
 
-from agentstan.defi import MarketConfig, LendingMarket
-from agentstan.defi.calibration import _black_thursday, run_case, calibration_report
+from agentstan.defi import MarketConfig, LendingMarket, scenarios
+from agentstan.defi.calibration import (
+    _black_thursday, _aave_crv, run_case, calibration_report,
+)
 
 
 def sensitivity_band():
@@ -33,13 +35,33 @@ def sensitivity_band():
     return min(pcts), max(pcts)
 
 
-if __name__ == "__main__":
-    result = run_case(_black_thursday())
-    print(calibration_report(result))
+def crv_depth_band():
+    """CRV is a knife-edge: bad debt swings with the assumed CRV market depth."""
+    out = []
+    for depth in (30e6, 60e6, 120e6, 300e6, 600e6):
+        res = LendingMarket(scenarios.crv_short_squeeze(debt_depth_usd=depth)).run(60)
+        exp = res["history"][0]["total_borrowed"] * res["history"][0]["debt_true_price"]
+        out.append((depth, res["summary"]["bad_debt"] / exp if exp else 0.0))
+    return out
 
+
+if __name__ == "__main__":
+    # Case 1 — Black Thursday (oracle-lag / liquidation-freeze; robust match)
+    print(calibration_report(run_case(_black_thursday())))
     lo, hi = sensitivity_band()
     print(f"## Robustness\nAcross plausible freeze/vault-distribution assumptions, "
           f"model bad debt spans {lo:.1%}–{hi:.1%}, bracketing the documented ~6%. "
           f"A short freeze (oracle lag <= ~2 steps) yields ~0% — matching the "
-          f"post-mortem finding that the sustained liquidation freeze, not the "
-          f"price drop alone, caused the loss.")
+          f"post-mortem that the sustained liquidation freeze, not the price drop "
+          f"alone, caused the loss.\n")
+
+    print("\n" + "=" * 70 + "\n")
+
+    # Case 2 — Aave CRV (illiquidity / volatile-debt; knife-edge near-miss)
+    print(calibration_report(run_case(_aave_crv())))
+    print("## Sensitivity to assumed CRV depth")
+    for depth, pct in crv_depth_band():
+        print(f"  debt depth ${depth/1e6:4.0f}M -> {pct:5.1%} bad debt")
+    print("Bad debt swings from full-loss (thin) to ~0 (deep) — the model places "
+          "CRV at the recover/fail boundary, consistent with the documented "
+          "near-miss, but does not pin the magnitude (homogeneous liquidators).")

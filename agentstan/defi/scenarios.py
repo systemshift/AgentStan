@@ -170,6 +170,45 @@ def oracle_delay(base: Optional[MarketConfig] = None, *, lag: int = 24,
     return MarketConfig.from_dict(d)
 
 
+def crv_short_squeeze(base: Optional[MarketConfig] = None, *, debt_spike_pct: float = 0.65,
+                      debt_depth_usd: float = 120_000_000.0, collateral_usd: float = 63_000_000.0,
+                      borrow_usd: float = 40_000_000.0, debt_initial_price: float = 0.40,
+                      liquidator_count: int = 30, liquidator_capital: float = 8_000_000.0,
+                      start: int = 4, duration: int = 20) -> MarketConfig:
+    """Illiquidity-driven bad debt from a *volatile borrowed asset* — the
+    CRV/Aave class. Collateral is a stablecoin (price ~1); the borrowed token
+    spikes upward (a short squeeze), pushing positions underwater from the
+    liability side. Liquidating means *buying* the thin borrowed asset to repay,
+    so slippage (set by ``debt_depth_usd``) can make liquidation unprofitable.
+
+    Note: with homogeneous liquidators this tends to bifurcate (fully cleared vs
+    large residual); real partial-winddown outcomes need liquidator heterogeneity.
+    """
+    max_ltv = 0.85  # USDC-collateral LTV on Aave V2
+    frac = borrow_usd / (collateral_usd * max_ltv) if collateral_usd > 0 else 1.0
+    return MarketConfig.from_dict({
+        "seed": 1,
+        "protocol": {
+            "max_ltv": max_ltv, "liquidation_threshold": 0.88, "liquidation_bonus": 0.085,
+            "close_factor": 0.15, "reserve_factor": 0.0, "initial_reserves": 0.0,
+        },
+        "oracle": {"lag_steps": 1},
+        "scenario": {"name": f"Short squeeze (+{int(debt_spike_pct*100)}% borrowed asset)",
+                     "initial_price": 1.0, "crash_pct": 0.0,
+                     "debt_initial_price": debt_initial_price, "debt_spike_pct": debt_spike_pct,
+                     "crash_start": start, "crash_duration": duration},
+        "liquidity": {"debt_depth_usd": debt_depth_usd, "collateral_depth_usd": None},
+        "populations": [
+            {"type": "lender", "count": 1, "policy": "passive",
+             "params": {"supply": (borrow_usd / debt_initial_price) * 3.0}},
+            {"type": "borrower", "count": 1, "policy": "passive",
+             "params": {"collateral": collateral_usd, "borrow_ltv_fraction": frac}},
+            {"type": "liquidator", "count": liquidator_count, "policy": "greedy",
+             "params": {"capital": liquidator_capital}},
+        ],
+    })
+
+
 SCENARIOS = {
     "eth_crash": eth_crash,
     "stablecoin_depeg": stablecoin_depeg,
@@ -177,6 +216,7 @@ SCENARIOS = {
     "whale_panic": whale_panic,
     "liquidation_congestion": liquidation_congestion,
     "oracle_delay": oracle_delay,
+    "crv_short_squeeze": crv_short_squeeze,
 }
 
 

@@ -15,7 +15,7 @@ from typing import Any, Dict, List
 
 from .config import MarketConfig
 from .protocol import LendingPool
-from .oracle import Oracle, build_price_path
+from .oracle import Oracle, build_price_path, build_debt_price_path
 from .agents import Agent, MarketView, resolve_policy
 
 
@@ -75,7 +75,7 @@ class LendingMarket:
                 ))
                 next_id += 1
 
-    def _seed_positions(self, price: float) -> None:
+    def _seed_positions(self, price: float, debt_price: float = 1.0) -> None:
         """Open the initial positions at t0. Lenders must supply before borrowers
         draw, so seeding runs lenders first regardless of the per-step stage order."""
         for agent in self.agents:
@@ -92,15 +92,17 @@ class LendingMarket:
             collateral = float(p.get("collateral", 0.0))
             self.pool.deposit_collateral(agent.id, collateral)
             frac = float(p.get("borrow_ltv_fraction", 1.0))
-            target = collateral * price * self.config.protocol.max_ltv * frac
-            self.pool.borrow(agent.id, target, price)
+            target_value = collateral * price * self.config.protocol.max_ltv * frac  # USD
+            target_units = target_value / debt_price if debt_price > 0 else 0.0
+            self.pool.borrow(agent.id, target_units, price, debt_price)
 
     # --- run -------------------------------------------------------------
     def run(self, steps: int) -> Dict[str, Any]:
         prices = build_price_path(self.config.scenario, steps)
-        self.oracle = Oracle(prices, self.config.oracle.lag_steps)
+        debt_prices = build_debt_price_path(self.config.scenario, steps)
+        self.oracle = Oracle(prices, self.config.oracle.lag_steps, debt_prices)
 
-        self._seed_positions(self.oracle.reported_price(0))
+        self._seed_positions(self.oracle.reported_price(0), self.oracle.debt_reported_price(0))
         self._record(0)
 
         for t in range(1, steps + 1):
@@ -114,14 +116,20 @@ class LendingMarket:
         self.pool.reset_step_tallies()
         oracle_price = self.oracle.reported_price(t)
         true_price = self.oracle.true_price(t)
+        debt_oracle_price = self.oracle.debt_reported_price(t)
+        debt_true_price = self.oracle.debt_true_price(t)
 
         self.pool.accrue_interest(self.config.steps_per_year)
 
+        liq = self.config.liquidity
         view = MarketView(
             step=t, oracle_price=oracle_price, true_price=true_price,
             utilization=self.pool.utilization,
             available_liquidity=self.pool.available_liquidity,
             initial_price=self.config.scenario.initial_price,
+            debt_oracle_price=debt_oracle_price, debt_true_price=debt_true_price,
+            collateral_depth_usd=liq.collateral_depth_usd,
+            debt_depth_usd=liq.debt_depth_usd,
         )
 
         for stage in _STAGE_ORDER:
@@ -129,7 +137,7 @@ class LendingMarket:
                 if agent.type != stage:
                     continue
                 for intent in self._decide(agent, view):
-                    self._apply(agent, intent, oracle_price, true_price)
+                    self._apply(agent, intent, view)
 
     def _decide(self, agent: Agent, view: MarketView) -> List[Dict[str, Any]]:
         """Resolve an agent's intents for this step. "llm"-policy agents route
@@ -140,8 +148,7 @@ class LendingMarket:
             return llm_decide(agent, self.pool, view, self.llm_decider)
         return resolve_policy(agent.type, agent.policy)(agent, self.pool, view)
 
-    def _apply(self, agent: Agent, intent: Dict[str, Any],
-               oracle_price: float, true_price: float) -> None:
+    def _apply(self, agent: Agent, intent: Dict[str, Any], view: MarketView) -> None:
         action = intent.get("action")
         if action == "repay":
             amount = min(intent.get("amount", 0.0), agent.wallet_usdc)
@@ -154,26 +161,27 @@ class LendingMarket:
             target = self.pool.accounts.get(intent.get("target"))
             if target is None:
                 return
-            spent = self.pool.liquidate(
-                target, intent.get("amount", 0.0), oracle_price, true_price)
-            agent.capital -= spent
+            cleared_units = self.pool.liquidate(
+                target, intent.get("amount", 0.0), view.oracle_price, view.true_price,
+                view.debt_oracle_price, view.debt_true_price)
+            agent.capital -= cleared_units * view.debt_oracle_price  # USD deployed
         # unknown actions are ignored (validated vocabulary keeps this rare)
 
     # --- metrics ---------------------------------------------------------
-    def _underwater_count(self, price: float) -> int:
+    def _underwater_count(self, price: float, debt_price: float = 1.0) -> int:
         thr = self.config.protocol.liquidation_threshold
         return sum(
             1 for a in self.pool.accounts.values()
-            if a.debt > 0 and a.health_factor(price, thr) < 1.0
+            if a.debt > 0 and a.health_factor(price, thr, debt_price) < 1.0
         )
 
-    def _outstanding_shortfall(self, true_price: float) -> float:
-        """Latent bad debt: for every open position, how much debt exceeds the
-        collateral's true value. This is the hole the protocol is carrying even
-        before a liquidation realizes it — congested/un-liquidated positions
-        live here."""
+    def _outstanding_shortfall(self, true_price: float, debt_price: float = 1.0) -> float:
+        """Latent bad debt (USD): for every open position, how much the debt's
+        value exceeds the collateral's true value. The hole the protocol carries
+        before a liquidation realizes it — congested/un-liquidated positions live
+        here."""
         return sum(
-            max(0.0, a.debt - a.collateral * true_price)
+            max(0.0, a.debt * debt_price - a.collateral * true_price)
             for a in self.pool.accounts.values() if a.debt > 0
         )
 
@@ -181,21 +189,23 @@ class LendingMarket:
         pool = self.pool
         true_price = self.oracle.true_price(t) if self.oracle else self.config.scenario.initial_price
         oracle_price = self.oracle.reported_price(t) if self.oracle else true_price
+        debt_true_price = self.oracle.debt_true_price(t) if self.oracle else 1.0
         self.history.append({
             "step": t,
             "true_price": true_price,
             "oracle_price": oracle_price,
+            "debt_true_price": debt_true_price,
             "utilization": pool.utilization,
             "available_liquidity": pool.available_liquidity,
             "total_borrowed": pool.total_borrowed,
             "total_supplied": pool.total_supplied,
             "reserves": pool.reserves,
             "realized_bad_debt": pool.bad_debt,
-            "outstanding_shortfall": self._outstanding_shortfall(true_price),
+            "outstanding_shortfall": self._outstanding_shortfall(true_price, debt_true_price),
             "step_bad_debt": pool.step_bad_debt,
             "step_liquidation_volume": pool.step_liquidation_volume,
             "step_liquidations": pool.step_liquidations,
-            "underwater_accounts": self._underwater_count(true_price),
+            "underwater_accounts": self._underwater_count(true_price, debt_true_price),
         })
 
     def _results(self, steps: int) -> Dict[str, Any]:
@@ -205,7 +215,7 @@ class LendingMarket:
         max_util = max(h["utilization"] for h in self.history)
         peak_underwater = max(h["underwater_accounts"] for h in self.history)
         final_true_price = self.oracle.true_price(steps)
-        outstanding = self._outstanding_shortfall(final_true_price)
+        outstanding = self._outstanding_shortfall(final_true_price, self.oracle.debt_true_price(steps))
         total_bad_debt = self.pool.bad_debt + outstanding
         insurance_used = max(0.0, self.config.protocol.initial_reserves - self.pool.reserves)
         return {

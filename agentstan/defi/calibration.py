@@ -31,6 +31,8 @@ class HistoricalCase:
     sources: List[str] = field(default_factory=list)
     assumptions: List[str] = field(default_factory=list)
     caveats: List[str] = field(default_factory=list)
+    threshold_event: bool = False             # near-miss; model brackets but doesn't pin the magnitude
+    steps: int = 48                           # the event's natural horizon
 
 
 def _black_thursday() -> HistoricalCase:
@@ -108,14 +110,71 @@ def _black_thursday() -> HistoricalCase:
     )
 
 
-CASES = {"black_thursday": _black_thursday}
+def _aave_crv() -> HistoricalCase:
+    """Aave V2, November 2022. Avraham Eisenberg deposited ~$63.6M USDC and
+    borrowed ~92M CRV (~$40M) to short it; CRV instead *squeezed upward*
+    (~$0.40 -> ~$0.62+). His position was liquidated over ~1 hour / 300+ txns by
+    ~20 liquidators who had to source thin CRV to repay, leaving Aave ~2.6M CRV
+    (~$1.6M) of bad debt.
+
+    From-history (not fit): USDC collateral, CRV debt, the ~+65% CRV move, the
+    ~63% effective LTV. This is the illiquidity-driven / volatile-debt class the
+    base model could not represent before the slippage + debt-price extension.
+    """
+    from . import scenarios
+    config = scenarios.crv_short_squeeze()  # USDC collateral, CRV debt, thin CRV depth
+    return HistoricalCase(
+        name="aave_crv_2022",
+        description="Aave V2 CRV short squeeze, Nov 2022 — borrowed asset spiked, "
+                    "thin liquidity left ~$1.6M bad debt.",
+        config=config,
+        documented={
+            "collateral": "~$63.6M USDC",
+            "borrowed": "~92M CRV (~$40M)",
+            "crv_move": "~$0.40 -> ~$0.62+ (squeeze up)",
+            "bad_debt_usd": 1_600_000,
+            "bad_debt_crv": "~2.6M CRV",
+            "mechanism": "volatile borrowed asset spikes + thin CRV liquidity -> "
+                         "liquidating (buying CRV) is lossy/slow -> residual bad debt",
+        },
+        target_bad_debt_pct=0.04,   # ~$1.6M / ~$40M borrowed
+        threshold_event=True,
+        steps=60,                   # squeeze + multi-step liquidation winddown
+        sources=[
+            "https://research.kaiko.com/insights/crv-aave-liquidation",
+            "https://blockworks.co/news/aave-curve-bad-debt",
+            "https://thedefiant.io/news/defi/crv-trade-aave-bad-debt",
+        ],
+        assumptions=[
+            "Single whale position at ~63% LTV (the documented shape).",
+            "CRV market depth (debt_depth_usd) is an estimate — the real figure "
+            "drives whether liquidation is profitable.",
+        ],
+        caveats=[
+            "KNIFE-EDGE / near-miss: with homogeneous liquidators the model "
+            "bifurcates (fully cleared vs large residual). It brackets the "
+            "documented ~4% but does NOT pin the magnitude.",
+            "Reproducing the real '300 partial liquidations + small residual' "
+            "smoothly needs liquidator heterogeneity (varied gas/cost/speed) — "
+            "the same fix that smoothed the oracle-lag cliff for borrowers.",
+            "This case exercises the slippage + volatile-debt extension; it is a "
+            "weaker calibration than Black Thursday by design.",
+        ],
+    )
 
 
-def run_case(case: HistoricalCase, steps: int = 48) -> Dict[str, Any]:
+CASES = {"black_thursday": _black_thursday, "aave_crv": _aave_crv}
+
+
+def run_case(case: HistoricalCase, steps: int = None) -> Dict[str, Any]:
     """Run a case and return model output alongside the documented actuals."""
-    results = LendingMarket(case.config).run(steps)
+    results = LendingMarket(case.config).run(steps or case.steps)
     s = results["summary"]
-    exposure = max((h["total_borrowed"] for h in results["history"]), default=0.0)
+    hist = results["history"]
+    # Borrowed principal in USD = debt units x debt price at origination. (Using
+    # the debt asset's price matters when the borrowed asset is itself volatile.)
+    h0 = hist[0]
+    exposure = h0["total_borrowed"] * h0["debt_true_price"]
     model_pct = (s["bad_debt"] / exposure) if exposure else 0.0
 
     target = case.target_bad_debt_pct
@@ -144,10 +203,9 @@ def calibration_report(result: Dict[str, Any]) -> str:
         case.description,
         "",
         "## Documented (from history)",
-        f"- ETH move: {d['eth_from_to']} ({d['eth_drawdown']:.0%})",
-        f"- Params: {d['liquidation_ratio']} liquidation ratio, {d['liquidation_penalty']} penalty",
-        f"- Outcome: ~${d['bad_debt_usd']:,.0f} uncollateralized (~{case.target_bad_debt_pct:.0%} of system debt)",
-        f"- Mechanism: {d['mechanism']}",
+        *[f"- {k.replace('_', ' ')}: {(f'${v:,.0f}' if isinstance(v, (int, float)) else v)}"
+          for k, v in d.items()],
+        f"- (documented loss ~{case.target_bad_debt_pct:.0%} of borrowings)",
         "",
         "## Model (real price path + real risk params, stated assumptions)",
         f"- Bad debt: ${s['bad_debt']:,.0f} = {result['model_bad_debt_pct']:.1%} of borrowings",
@@ -161,6 +219,8 @@ def calibration_report(result: Dict[str, Any]) -> str:
         f"{'PASS' if result['within_order_of_magnitude'] else 'FAIL'}",
         f"- Right mechanism (bad debt from failed/late liquidations): "
         f"{'PASS' if result['mechanism_matches'] else 'FAIL'}",
+        *(["- NOTE: threshold/near-miss event — the model brackets the outcome "
+           "but does not pin its magnitude (see caveats)."] if case.threshold_event else []),
         "",
         "## Assumptions (not taken from history)",
         *[f"- {a}" for a in case.assumptions],

@@ -11,20 +11,32 @@ from typing import Dict, Optional
 from .config import ProtocolConfig
 
 
+def slippage_fraction(trade_usd: float, depth_usd: Optional[float]) -> float:
+    """Saturating price-impact model: a trade of size ``trade_usd`` against
+    market ``depth_usd`` loses this fraction to slippage. ``None`` depth == no
+    slippage (infinitely deep). depth is the size at which slippage hits 50%."""
+    if depth_usd is None or depth_usd <= 0 or trade_usd <= 0:
+        return 0.0
+    return trade_usd / (trade_usd + depth_usd)
+
+
 @dataclass
 class Account:
     """One borrower position: collateral (in collateral units, e.g. ETH) and
-    debt (in borrow units, e.g. USDC)."""
+    debt (in borrow-asset units, e.g. USDC or CRV)."""
     agent_id: int
     collateral: float = 0.0
     debt: float = 0.0
 
-    def health_factor(self, price: float, liquidation_threshold: float) -> float:
-        """HF = (collateral value x threshold) / debt. < 1 means liquidatable.
-        A debt-free account is infinitely healthy."""
+    def health_factor(self, price: float, liquidation_threshold: float,
+                      debt_price: float = 1.0) -> float:
+        """HF = (collateral value x threshold) / debt value. < 1 means
+        liquidatable. ``debt_price`` (USD per debt-asset unit) defaults to 1.0
+        (debt is the numeraire); a rising debt price lowers health from the
+        liability side. A debt-free account is infinitely healthy."""
         if self.debt <= 0:
             return float("inf")
-        return (self.collateral * price * liquidation_threshold) / self.debt
+        return (self.collateral * price * liquidation_threshold) / (self.debt * debt_price)
 
 
 class LendingPool:
@@ -100,13 +112,16 @@ class LendingPool:
         if amount > 0:
             self.account(agent_id).collateral += amount
 
-    def borrow(self, agent_id: int, amount: float, price: float) -> float:
-        """Borrow against collateral, respecting max_ltv and available liquidity.
-        Returns the amount actually borrowed."""
+    def borrow(self, agent_id: int, amount: float, price: float,
+               debt_price: float = 1.0) -> float:
+        """Borrow ``amount`` debt-asset units against collateral, respecting
+        max_ltv (on USD values) and available liquidity. Returns units borrowed.
+        ``debt_price`` defaults to 1.0 (debt is the numeraire)."""
         acct = self.account(agent_id)
-        max_debt = acct.collateral * price * self.config.max_ltv
-        room = max(0.0, max_debt - acct.debt)
-        actual = max(0.0, min(amount, room, self.available_liquidity))
+        max_debt_value = acct.collateral * price * self.config.max_ltv      # USD
+        current_value = acct.debt * debt_price
+        room_units = max(0.0, (max_debt_value - current_value) / debt_price) if debt_price > 0 else 0.0
+        actual = max(0.0, min(amount, room_units, self.available_liquidity))
         acct.debt += actual
         self.total_borrowed += actual
         return actual
@@ -120,36 +135,39 @@ class LendingPool:
         return actual
 
     def liquidate(self, acct: Account, repay_amount: float, oracle_price: float,
-                  true_price: float) -> float:
-        """Liquidator repays ``repay_amount`` of debt and seizes collateral worth
-        repay x (1 + bonus) at the *oracle* price. Returns USDC the liquidator
-        actually spent.
+                  true_price: float, debt_oracle_price: float = 1.0,
+                  debt_true_price: float = 1.0) -> float:
+        """Liquidator repays ``repay_amount`` debt-asset units and seizes
+        collateral worth (repaid debt value) x (1 + bonus) at the *oracle*
+        prices. Returns the debt-asset units actually cleared.
 
-        Bad debt is recognized when seizing the collateral the discount entitles
-        them to would exceed what the borrower has — i.e. the position is so
-        underwater that even a full liquidation cannot make the pool whole. We
-        value the realized loss at the *true* price, since that is the economic
-        reality regardless of what the lagging oracle reports.
+        Bad debt is recognized when the collateral the discount entitles them to
+        exceeds what the borrower has — the position is so underwater that even a
+        full liquidation cannot make the pool whole. The realized loss is valued
+        in USD at the *true* prices, the economic reality regardless of what the
+        lagging oracle reports. With debt prices == 1.0 this reduces exactly to
+        the single-asset (USDC-debt) case.
         """
         cfg = self.config
         repay_amount = max(0.0, min(repay_amount, acct.debt * cfg.close_factor, acct.debt))
         if repay_amount <= 0 or oracle_price <= 0:
             return 0.0
 
-        seize_value = repay_amount * (1.0 + cfg.liquidation_bonus)
-        seize_collateral = seize_value / oracle_price
+        seize_value_usd = repay_amount * debt_oracle_price * (1.0 + cfg.liquidation_bonus)
+        seize_collateral = seize_value_usd / oracle_price
 
         if seize_collateral >= acct.collateral:
             # Not enough collateral to honor the liquidation in full.
             seize_collateral = acct.collateral
-            # Debt cleared is limited by what the seized collateral is truly worth.
-            recoverable = (seize_collateral * true_price) / (1.0 + cfg.liquidation_bonus)
-            cleared = min(acct.debt, recoverable)
-            shortfall = acct.debt - cleared
+            # Debt units cleared are limited by what the seized collateral is
+            # truly worth (in USD), converted back to debt units.
+            recoverable_usd = (seize_collateral * true_price) / (1.0 + cfg.liquidation_bonus)
+            cleared = min(acct.debt, recoverable_usd / debt_true_price) if debt_true_price > 0 else acct.debt
+            shortfall_units = acct.debt - cleared
             acct.collateral = 0.0
             acct.debt = 0.0
-            self.total_borrowed -= (cleared + shortfall)
-            self._absorb_bad_debt(shortfall)
+            self.total_borrowed -= (cleared + shortfall_units)
+            self._absorb_bad_debt(shortfall_units * debt_true_price, debt_true_price)
             self.step_liquidation_volume += cleared
             self.step_liquidations += 1
             return cleared
@@ -161,15 +179,17 @@ class LendingPool:
         self.step_liquidations += 1
         return repay_amount
 
-    def _absorb_bad_debt(self, shortfall: float) -> None:
-        if shortfall <= 0:
+    def _absorb_bad_debt(self, shortfall_usd: float, debt_price: float = 1.0) -> None:
+        if shortfall_usd <= 0:
             return
-        self.bad_debt += shortfall
-        self.step_bad_debt += shortfall
-        # Reserves/insurance fund absorb what they can; the rest is a supplier loss.
-        covered = min(self.reserves, shortfall)
+        self.bad_debt += shortfall_usd                  # tracked in USD
+        self.step_bad_debt += shortfall_usd
+        # Reserves (USD) absorb what they can; the rest is a supplier loss
+        # (converted back to debt-asset units for the supply book).
+        covered = min(self.reserves, shortfall_usd)
         self.reserves -= covered
-        self.total_supplied -= (shortfall - covered)
+        if debt_price > 0:
+            self.total_supplied -= (shortfall_usd - covered) / debt_price
 
     def reset_step_tallies(self) -> None:
         self.step_liquidation_volume = 0.0

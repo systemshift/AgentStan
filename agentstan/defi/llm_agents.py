@@ -33,7 +33,8 @@ def _menu(agent_type: str) -> List[str]:
 def _context(agent, pool, view) -> Dict[str, Any]:
     """The decision context handed to the decider — plain JSON-able data."""
     acct = pool.account(agent.id)
-    hf = acct.health_factor(view.oracle_price, pool.config.liquidation_threshold)
+    hf = acct.health_factor(view.oracle_price, pool.config.liquidation_threshold,
+                            view.debt_oracle_price)
     drawdown = ((view.initial_price - view.oracle_price) / view.initial_price
                 if view.initial_price else 0.0)
     return {
@@ -72,7 +73,8 @@ def rule_fallback(agent, pool, view) -> List[Dict[str, Any]]:
         return _to_intent(agent, pool, "withdraw") if drawdown >= trigger else []
     if agent.type == "borrower":
         acct = pool.account(agent.id)
-        hf = acct.health_factor(view.oracle_price, pool.config.liquidation_threshold)
+        hf = acct.health_factor(view.oracle_price, pool.config.liquidation_threshold,
+                                view.debt_oracle_price)
         if hf < agent.params.get("repay_below_hf", 1.1) and agent.wallet_usdc > 0:
             return _to_intent(agent, pool, "repay")
     return []

@@ -47,3 +47,17 @@ def test_registry_and_determinism():
     a = run_case(_black_thursday())["summary"]
     b = run_case(_black_thursday())["summary"]
     assert a == b
+
+
+def test_aave_crv_reproduces_mechanism_and_is_flagged_knife_edge():
+    from agentstan.defi.calibration import _aave_crv
+    case = _aave_crv()
+    assert case.threshold_event is True        # honestly flagged as a near-miss
+    assert case.sources
+    r = run_case(case)
+    assert r["summary"]["bad_debt"] > 0
+    assert r["mechanism_matches"] is True      # volatile-debt + slippage-blocked liquidation
+    assert r["within_order_of_magnitude"] is True
+    md = calibration_report(r)
+    assert "threshold/near-miss" in md         # report is candid that it doesn't pin magnitude
+    assert "liquidator heterogeneity" in md.lower() or "heterogeneity" in md.lower()

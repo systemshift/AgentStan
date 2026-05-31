@@ -58,14 +58,38 @@ class OracleConfig:
 
 @dataclass
 class ScenarioConfig:
-    """The market shock. Either supply an explicit ``price_path`` (USDC per unit
-    of collateral, one entry per step) or describe a crash to be generated."""
+    """The market shock. Either supply an explicit ``price_path`` (numeraire-USD
+    per unit of collateral, one entry per step) or describe a crash to be
+    generated.
+
+    The borrowed (debt) asset is normally the numeraire (price 1.0). For events
+    where the *debt* asset itself revalues — e.g. a borrowed token squeezing
+    upward, as in the CRV/Aave case — set ``debt_spike_pct`` (or an explicit
+    ``debt_price_path``); a rising debt price pushes positions underwater from
+    the liability side."""
     name: str = "custom"
     initial_price: float = 3000.0
     price_path: Optional[List[float]] = None
     crash_pct: float = 0.0       # total fractional drop, e.g. 0.40 for -40%
     crash_start: int = 10        # step the crash begins
     crash_duration: int = 20     # steps over which it unfolds (>0 => gradual)
+    # Debt-asset price (USD). Default constant 1.0 == debt is the numeraire.
+    debt_initial_price: float = 1.0
+    debt_price_path: Optional[List[float]] = None
+    debt_spike_pct: float = 0.0  # fractional rise of the debt asset over the window
+
+
+@dataclass
+class LiquidityConfig:
+    """Market depth for liquidation slippage. ``None`` depth == infinitely deep
+    (no slippage — the default, reproducing the frictionless model).
+
+    Depth is the USD trade size at which slippage reaches 50% (saturating model:
+    slippage = size / (size + depth)). Thin depth on the asset a liquidator must
+    trade is what makes large liquidations unprofitable — the illiquidity-driven
+    bad-debt mechanism (CRV/Aave)."""
+    collateral_depth_usd: Optional[float] = None  # depth for selling seized collateral
+    debt_depth_usd: Optional[float] = None         # depth for sourcing the debt asset to repay
 
 
 @dataclass
@@ -84,6 +108,7 @@ class MarketConfig:
     protocol: ProtocolConfig = field(default_factory=ProtocolConfig)
     oracle: OracleConfig = field(default_factory=OracleConfig)
     scenario: ScenarioConfig = field(default_factory=ScenarioConfig)
+    liquidity: LiquidityConfig = field(default_factory=LiquidityConfig)
     populations: List[AgentPopulation] = field(default_factory=list)
     steps_per_year: int = 8760   # accrual granularity (8760 = hourly steps)
     seed: int = 0
@@ -102,6 +127,7 @@ class MarketConfig:
             protocol=ProtocolConfig(**protocol),
             oracle=OracleConfig(**d.get("oracle", {})),
             scenario=ScenarioConfig(**d.get("scenario", {})),
+            liquidity=LiquidityConfig(**d.get("liquidity", {})),
             populations=[AgentPopulation(**p) for p in d.get("populations", [])],
             steps_per_year=d.get("steps_per_year", 8760),
             seed=d.get("seed", 0),

@@ -12,7 +12,9 @@ from a prompt instead of a rule. The deterministic mechanics never change.
 """
 
 from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, List
+from typing import Any, Callable, Dict, List, Optional
+
+from .protocol import slippage_fraction
 
 
 @dataclass
@@ -35,6 +37,12 @@ class MarketView:
     utilization: float
     available_liquidity: float
     initial_price: float = 0.0   # scenario starting price, for drawdown triggers
+    # debt-asset price (USD); 1.0 == debt is the numeraire
+    debt_oracle_price: float = 1.0
+    debt_true_price: float = 1.0
+    # market depth for liquidation slippage (None == infinitely deep)
+    collateral_depth_usd: Optional[float] = None
+    debt_depth_usd: Optional[float] = None
 
 
 # --- borrower policies ---------------------------------------------------
@@ -106,30 +114,38 @@ def _liquidator_greedy(agent, pool, view) -> List[Dict[str, Any]]:
         return []
     cfg = pool.config
     margin = agent.params.get("min_profit_margin", 0.0)
+    dp_oracle, dp_true = view.debt_oracle_price, view.debt_true_price
     underwater = [
         a for a in pool.accounts.values()
-        if a.debt > 0 and a.health_factor(view.oracle_price, cfg.liquidation_threshold) < 1.0
+        if a.debt > 0 and a.health_factor(view.oracle_price, cfg.liquidation_threshold, dp_oracle) < 1.0
     ]
-    underwater.sort(key=lambda a: a.debt, reverse=True)
+    underwater.sort(key=lambda a: a.debt * dp_oracle, reverse=True)  # largest USD debt first
 
     intents = []
-    budget = agent.capital
+    budget = agent.capital  # USD
     for acct in underwater:
         if budget <= 0:
             break
-        repay = min(acct.debt * cfg.close_factor, budget)
+        cap_units = (budget / dp_true) if dp_true > 0 else acct.debt
+        repay = min(acct.debt * cfg.close_factor, cap_units)  # debt-asset units
         if repay <= 0:
             continue
-        # collateral seized at the (possibly stale) oracle price...
-        seized = min(repay * (1.0 + cfg.liquidation_bonus) / view.oracle_price,
+        # Collateral seized at the (possibly stale) oracle prices...
+        seized = min(repay * dp_oracle * (1.0 + cfg.liquidation_bonus) / view.oracle_price,
                      acct.collateral)
-        # ...but liquidated for USDC at the true market price.
-        profit = seized * view.true_price - repay
-        if profit < margin * repay:
+        # ...but the liquidator must SOURCE the debt asset to repay (buy leg) and
+        # SELL the seized collateral (sell leg), both at the true price and both
+        # paying slippage into thin markets. Thin depth on the asset they must
+        # trade is what makes large liquidations unprofitable (the CRV/Aave case).
+        buy_size = repay * dp_true
+        sell_size = seized * view.true_price
+        cost = buy_size * (1.0 + slippage_fraction(buy_size, view.debt_depth_usd))
+        proceeds = sell_size * (1.0 - slippage_fraction(sell_size, view.collateral_depth_usd))
+        if proceeds - cost < margin * cost:
             continue  # unprofitable: rational liquidator stays out
         intents.append({"action": "liquidate", "agent": agent.id,
                         "target": acct.agent_id, "amount": repay})
-        budget -= repay
+        budget -= cost
     return intents
 
 
