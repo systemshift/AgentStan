@@ -22,6 +22,7 @@ from .report import stress_report, write_report
 from .llm_agents import OpenAIDecider
 from .authoring import author_config, OpenAIConfigAuthor
 from . import scenarios
+from . import calibration
 
 __all__ = [
     "LendingMarket",
@@ -38,6 +39,7 @@ __all__ = [
     "stress_report",
     "write_report",
     "scenarios",
+    "calibration",
     "OpenAIDecider",
     "author_config",
     "OpenAIConfigAuthor",
