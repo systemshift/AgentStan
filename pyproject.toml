@@ -47,7 +47,7 @@ Homepage = "https://github.com/systemshift/agentstan"
 Repository = "https://github.com/systemshift/agentstan"
 
 [tool.setuptools]
-packages = ["agentstan", "agentstan.core", "agentstan.experiment", "agentstan.analysis", "agentstan.ai", "agentstan.server"]
+packages = ["agentstan", "agentstan.core", "agentstan.experiment", "agentstan.analysis", "agentstan.ai", "agentstan.server", "agentstan.defi"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
