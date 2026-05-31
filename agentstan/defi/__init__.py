@@ -20,6 +20,7 @@ from .engine import LendingMarket
 from .sweep import sweep, frontier, grid, run_config
 from .report import stress_report, write_report
 from .llm_agents import OpenAIDecider
+from .authoring import author_config, OpenAIConfigAuthor
 from . import scenarios
 
 __all__ = [
@@ -38,4 +39,6 @@ __all__ = [
     "write_report",
     "scenarios",
     "OpenAIDecider",
+    "author_config",
+    "OpenAIConfigAuthor",
 ]
