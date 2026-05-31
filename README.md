@@ -141,7 +141,26 @@ agentstan/
   experiment/     # Batch runs, parameter sweeps
   analysis/       # Population dynamics, event analysis
   ai/             # LLM-powered generation, interpretation, validation
+  defi/           # DeFi lending stress-testing (see below)
 ```
+
+## DeFi stress testing
+
+`agentstan.defi` is a self-serve simulation lab for DeFi lending protocols —
+*stress-test your protocol before it breaks*. Describe a market in plain
+language, run crash / depeg / whale-panic scenarios against it, sweep parameters
+to find the safe frontier, and export a governance-ready report.
+
+```python
+from agentstan.defi import author_config, LendingMarket
+
+cfg = author_config("USDC market, 75% max LTV, stress a 40% ETH crash with a slow oracle")
+print(LendingMarket(cfg).run(120)["summary"]["bad_debt"])
+```
+
+Deterministic protocol mechanics (interest, oracle, liquidation, slippage) +
+constrained LLM behavioral agents, validated against real events (MakerDAO Black
+Thursday, the Aave CRV squeeze). See **[`agentstan/defi/README.md`](agentstan/defi/README.md)**.
 
 ## License
 
