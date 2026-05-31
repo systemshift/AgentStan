@@ -36,19 +36,42 @@ class LendingMarket:
         self.history: List[Dict[str, Any]] = []
         self.step = 0
         self.oracle: Oracle = None  # built in run()
+        self.llm_decider = None     # set via attach_llm() for "llm"-policy agents
         self._build_agents()
 
+    def attach_llm(self, decider) -> None:
+        """Attach a decider for agents whose policy is "llm". ``decider`` is a
+        callable taking a decision context dict and returning one of the allowed
+        action strings. Without it, "llm" agents fall back to a safe rule."""
+        self.llm_decider = decider
+
     # --- setup -----------------------------------------------------------
+    def _sample_params(self, raw: Dict[str, Any]) -> Dict[str, Any]:
+        """Resolve per-agent heterogeneity: any ``"<key>_range": [lo, hi]`` is
+        sampled uniformly (seeded) into ``"<key>"``. This is what turns a uniform
+        population into a realistic spread of positions and smooths the sharp
+        liquidation cliff homogeneous borrowers produce."""
+        params = {}
+        for key, value in raw.items():
+            if key.endswith("_range") and isinstance(value, (list, tuple)) and len(value) == 2:
+                base = key[: -len("_range")]
+                params[base] = self.rng.uniform(value[0], value[1])
+            else:
+                params[key] = value
+        return params
+
     def _build_agents(self) -> None:
         next_id = 0
         for pop in self.config.populations:
-            resolve_policy(pop.type, pop.policy)  # fail fast on bad policy names
+            if pop.policy != "llm":
+                resolve_policy(pop.type, pop.policy)  # fail fast on bad policy names
             for _ in range(pop.count):
+                params = self._sample_params(pop.params)
                 self.agents.append(Agent(
                     id=next_id, type=pop.type, policy=pop.policy,
-                    params=dict(pop.params),
-                    wallet_usdc=float(pop.params.get("wallet_usdc", 0.0)),
-                    capital=float(pop.params.get("capital", 0.0)),
+                    params=params,
+                    wallet_usdc=float(params.get("wallet_usdc", 0.0)),
+                    capital=float(params.get("capital", 0.0)),
                 ))
                 next_id += 1
 
@@ -98,15 +121,24 @@ class LendingMarket:
             step=t, oracle_price=oracle_price, true_price=true_price,
             utilization=self.pool.utilization,
             available_liquidity=self.pool.available_liquidity,
+            initial_price=self.config.scenario.initial_price,
         )
 
         for stage in _STAGE_ORDER:
             for agent in self.agents:
                 if agent.type != stage:
                     continue
-                policy = resolve_policy(agent.type, agent.policy)
-                for intent in policy(agent, self.pool, view):
+                for intent in self._decide(agent, view):
                     self._apply(agent, intent, oracle_price, true_price)
+
+    def _decide(self, agent: Agent, view: MarketView) -> List[Dict[str, Any]]:
+        """Resolve an agent's intents for this step. "llm"-policy agents route
+        through the attached decider (or a rule fallback); all others use their
+        named deterministic policy."""
+        if agent.policy == "llm":
+            from .llm_agents import llm_decide
+            return llm_decide(agent, self.pool, view, self.llm_decider)
+        return resolve_policy(agent.type, agent.policy)(agent, self.pool, view)
 
     def _apply(self, agent: Agent, intent: Dict[str, Any],
                oracle_price: float, true_price: float) -> None:

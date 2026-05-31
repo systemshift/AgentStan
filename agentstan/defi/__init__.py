@@ -19,6 +19,8 @@ from .config import (
 from .engine import LendingMarket
 from .sweep import sweep, frontier, grid, run_config
 from .report import stress_report, write_report
+from .llm_agents import OpenAIDecider
+from . import scenarios
 
 __all__ = [
     "LendingMarket",
@@ -34,4 +36,6 @@ __all__ = [
     "run_config",
     "stress_report",
     "write_report",
+    "scenarios",
+    "OpenAIDecider",
 ]

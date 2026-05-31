@@ -34,6 +34,7 @@ class MarketView:
     true_price: float
     utilization: float
     available_liquidity: float
+    initial_price: float = 0.0   # scenario starting price, for drawdown triggers
 
 
 # --- borrower policies ---------------------------------------------------
@@ -65,6 +66,23 @@ def _lender_skittish(agent, pool, view) -> List[Dict[str, Any]]:
     if view.utilization >= trigger:
         amount = agent.params.get("withdraw_amount", agent.wallet_usdc)
         return [{"action": "withdraw", "agent": agent.id, "amount": amount}]
+    return []
+
+
+def _lender_panic_on_drawdown(agent, pool, view) -> List[Dict[str, Any]]:
+    """Pulls supply once the collateral price has fallen past a threshold from
+    the scenario start. Powers liquidity-withdrawal and whale-panic scenarios:
+    when supply leaves while funds are lent out, available liquidity collapses
+    and remaining lenders can't exit (a run). ``withdraw_fraction`` of the
+    lender's position is pulled (default all)."""
+    if agent.wallet_usdc <= 0 or view.initial_price <= 0:
+        return []
+    drawdown = (view.initial_price - view.oracle_price) / view.initial_price
+    trigger = agent.params.get("drawdown_trigger", 0.10)
+    if drawdown >= trigger:
+        frac = agent.params.get("withdraw_fraction", 1.0)
+        return [{"action": "withdraw", "agent": agent.id,
+                 "amount": agent.wallet_usdc * frac}]
     return []
 
 
@@ -117,7 +135,8 @@ def _liquidator_greedy(agent, pool, view) -> List[Dict[str, Any]]:
 
 POLICIES: Dict[str, Dict[str, Callable]] = {
     "borrower": {"passive": _borrower_passive, "prudent": _borrower_prudent},
-    "lender": {"passive": _lender_passive, "skittish": _lender_skittish},
+    "lender": {"passive": _lender_passive, "skittish": _lender_skittish,
+               "panic_on_drawdown": _lender_panic_on_drawdown},
     "liquidator": {"greedy": _liquidator_greedy},
 }
 
