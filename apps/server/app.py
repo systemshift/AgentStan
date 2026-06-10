@@ -1,13 +1,17 @@
 """
-AgentStan HTTP API server.
+AgentStan reference HTTP server.
 
-Run with: agentstan-server
-Or:       python -m agentstan.server
+This is a demo/reference deployment shell, NOT part of the agentstan
+library. It depends on the installed `agentstan` package; real production
+servers (auth, multi-tenancy, persistence) should live in their own repo
+and do the same.
 
-Wraps the full agentstan library in a REST API.
+Run with: python apps/server/app.py
+Requires: pip install agentstan flask flask-cors python-dotenv
 """
 
 import os
+import sys
 import uuid
 import time
 import copy
@@ -18,10 +22,12 @@ import logging
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 
-from ..core.simulation import Simulation
-from ..core.observer import Observer
-from ..core.intervention import InterventionEngine
-from .serialize import clean_for_json, results_to_dict, simulation_to_dict
+from agentstan.core.simulation import Simulation
+from agentstan.core.observer import Observer
+from agentstan.core.intervention import InterventionEngine
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from serialize import clean_for_json, results_to_dict, simulation_to_dict
 
 logger = logging.getLogger("agentstan.server")
 
@@ -73,7 +79,7 @@ def create_app(cors_origins=None, api_key=None):
         key = data.get("api_key", app.config["OPENAI_API_KEY"])
 
         try:
-            from ..ai.generate import generate as generate_spec
+            from agentstan.ai.generate import generate as generate_spec
             spec = generate_spec(prompt, model=model, api_key=key)
             sim = Simulation(spec)
             initial_counts = sim.agent_manager.get_counts()
@@ -209,7 +215,7 @@ def create_app(cors_origins=None, api_key=None):
             return jsonify({"error": "spec is required"}), 400
 
         try:
-            from ..experiment.batch import batch_run
+            from agentstan.experiment.batch import batch_run
             results = batch_run(spec, n_runs=n_runs, steps=steps, vary=vary, max_workers=4)
             return jsonify({"results": clean_for_json(results), "count": len(results)})
         except Exception as e:
@@ -226,8 +232,8 @@ def create_app(cors_origins=None, api_key=None):
             return jsonify({"error": "results is required"}), 400
 
         try:
-            from ..analysis.population import analyze as analyze_population
-            from ..analysis.events import analyze_events
+            from agentstan.analysis.population import analyze as analyze_population
+            from agentstan.analysis.events import analyze_events
             report = {
                 "population": analyze_population(results),
                 "events": analyze_events(results),
@@ -250,7 +256,7 @@ def create_app(cors_origins=None, api_key=None):
         model = data.get("model", app.config["OPENAI_MODEL"])
 
         try:
-            from ..ai.interpret import interpret
+            from agentstan.ai.interpret import interpret
             explanation = interpret(results, model=model, api_key=key)
             return jsonify({"explanation": explanation})
         except Exception as e:
@@ -320,3 +326,7 @@ def main():
 
     print(f"AgentStan server starting on {args.host}:{args.port}")
     app.run(host=args.host, port=args.port, debug=True)
+
+
+if __name__ == "__main__":
+    main()

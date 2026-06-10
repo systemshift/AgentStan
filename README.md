@@ -65,6 +65,17 @@ neighbor queries (`count`, `nearest_distance`). `"$energy"` reads the agent's
 own state; selectors like `{"nearest": {"type": "wolf"}}` pick a target agent
 for `move_toward`, `move_away`, and `interact`.
 
+The kernel is domain-blind: interactions are generic effects
+(`kill_target`, `transfer`, `self_delta`, `target_delta`), reproduction
+costs any attribute you choose, and world laws are spec data too — e.g.
+death at zero energy is a top-level `"global_rules"` entry, not engine code:
+
+```json
+"global_rules": [
+  {"when": {"<=": ["$energy", 0]}, "do": [{"type": "die", "cause": "energy_depleted"}]}
+]
+```
+
 ### Python behaviors (escape hatch)
 
 For local power users, an agent type may instead define `behavior_code` — a

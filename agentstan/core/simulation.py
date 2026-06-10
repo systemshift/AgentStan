@@ -57,6 +57,18 @@ class Simulation:
 
         self._create_agents()
 
+        # Global rules: declarative rules applied to every living agent each
+        # step (after behaviors). Replaces hardcoded world laws — e.g. death
+        # at zero energy is now spec data:
+        #   "global_rules": [{"when": {"<=": ["$energy", 0]},
+        #                     "do": [{"type": "die", "cause": "energy_depleted"}]}]
+        self.global_rules = None
+        if specification.get("global_rules"):
+            from .rules import RuleBehavior
+            self.global_rules = RuleBehavior(
+                specification["global_rules"], self, agent_type="<global_rules>"
+            )
+
         # Optional systems (attached after init)
         self.intervention_engine = None
         self.llm_engine = None
@@ -248,7 +260,7 @@ class Simulation:
                 if actions:
                     self.action_processor.process_actions(agent, actions, self.step)
 
-        self._apply_global_functions()
+        self._apply_global_rules()
         self.agent_manager.cleanup_dead_agents()
         self._record_metrics()
 
@@ -268,17 +280,22 @@ class Simulation:
         }
         return agent.execute_behavior(sim_state, agents_nearby)
 
-    def _apply_global_functions(self):
+    def _apply_global_rules(self):
+        """Apply spec-level global rules to every living agent.
+
+        Global rules see the agent's own state ("$attr"), "@step", and
+        global counts ({"total": type}) — not neighbors.
+        """
+        if not self.global_rules:
+            return
+        sim_state = {
+            "step": self.step,
+            "agent_counts": self.agent_manager.get_counts(),
+        }
         for agent in self.agent_manager.get_living_agents():
-            energy = agent.get_attribute("energy", None)
-            if energy is not None and energy <= 0:
-                agent.kill()
-                self.logger.log_agent_death(
-                    step=self.step,
-                    agent_id=agent.id,
-                    agent_type=agent.type,
-                    cause="energy_depleted",
-                )
+            actions = self.global_rules(agent, sim_state, [])
+            if actions:
+                self.action_processor.process_actions(agent, actions, self.step)
 
     def _record_metrics(self):
         counts = self.agent_manager.get_counts()

@@ -69,14 +69,28 @@ from typing import Any, Dict, List, Optional
 
 _INF = float("inf")
 
-_BINARY_OPS = {
-    "<": lambda a, b: a < b,
-    "<=": lambda a, b: a <= b,
-    ">": lambda a, b: a > b,
-    ">=": lambda a, b: a >= b,
-    "==": lambda a, b: a == b,
-    "!=": lambda a, b: a != b,
-}
+def _cmp(op):
+    """Comparison that treats a missing attribute (None) as 'no match'.
+
+    A rule like {"<=": ["$energy", 0]} simply doesn't fire for agents that
+    have no energy attribute, instead of crashing the run.
+    """
+    def compare(a, b):
+        if op in ("==", "!="):
+            return (a == b) if op == "==" else (a != b)
+        if a is None or b is None:
+            return False
+        if op == "<":
+            return a < b
+        if op == "<=":
+            return a <= b
+        if op == ">":
+            return a > b
+        return a >= b
+    return compare
+
+
+_BINARY_OPS = {op: _cmp(op) for op in ("<", "<=", ">", ">=", "==", "!=")}
 
 _KNOWN_OPS = set(_BINARY_OPS) | {
     "+", "-", "*", "/", "and", "or", "not", "min", "max", "abs",

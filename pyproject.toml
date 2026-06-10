@@ -26,13 +26,8 @@ dependencies = []
 ai = [
     "openai>=1.0",
 ]
-server = [
-    "flask>=3.1",
-    "flask-cors>=5.0",
-    "python-dotenv>=1.0",
-]
 all = [
-    "agentstan[ai,server]",
+    "agentstan[ai]",
 ]
 dev = [
     "pytest>=7.0",
@@ -40,14 +35,13 @@ dev = [
 
 [project.scripts]
 agentstan = "agentstan.__main__:main"
-agentstan-server = "agentstan.server.app:main"
 
 [project.urls]
 Homepage = "https://github.com/systemshift/agentstan"
 Repository = "https://github.com/systemshift/agentstan"
 
 [tool.setuptools]
-packages = ["agentstan", "agentstan.core", "agentstan.experiment", "agentstan.analysis", "agentstan.ai", "agentstan.server", "agentstan.defi"]
+packages = ["agentstan", "agentstan.core", "agentstan.experiment", "agentstan.analysis", "agentstan.ai", "agentstan.defi"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

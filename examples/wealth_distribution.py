@@ -7,32 +7,15 @@ the distribution converges to a Boltzmann (exponential) distribution.
 
 This is a classic demonstration that inequality can arise from purely
 random processes without any structural advantage.
+
+The model is pure JSON: the generic "transfer" interaction effect moves
+any attribute between agents — the kernel has no notion of "wealth".
 """
 
 from agentstan import Simulation, DataCollector
-from agentstan.experiment import batch_run
-
-behavior_code = """
-def agent_behavior(agent, model, agents_nearby):
-    actions = []
-
-    # Give 1 unit to a random neighbor (if we have money)
-    if agent['wealth'] > 0 and agents_nearby:
-        target = random.choice([a for a in agents_nearby if a.alive])
-        actions.append({
-            'type': 'interact',
-            'target_id': target.id,
-            'interaction_type': 'transfer_energy',
-            'params': {'amount': 1}
-        })
-
-    # Random walk
-    actions.append({'type': 'move', 'direction': [random.choice([-1,0,1]), random.choice([-1,0,1])]})
-
-    return actions
-"""
 
 spec = {
+    "seed": 7,
     "environment": {
         "type": "grid_2d",
         "dimensions": {"width": 20, "height": 20, "topology": "torus"},
@@ -41,47 +24,28 @@ spec = {
         "person": {
             "initial_count": 100,
             "initial_state": {"wealth": 10, "perception_radius": 2},
-            # Note: we use 'wealth' but the interact handler uses 'energy'.
-            # We remap via the energy attribute since that's what transfer_energy uses.
-            "behavior_code": behavior_code,
+            "behavior": {"rules": [
+                # Give 1 unit to a random neighbor (if we have money)
+                {"when": {"and": [
+                    {">": ["$wealth", 0]},
+                    {">": [{"count": {}}, 0]},
+                ]},
+                 "do": [{"type": "interact",
+                         "target": {"random": {}},
+                         "interaction_type": "gift",
+                         "params": {"transfer": {"attribute": "wealth", "amount": 1}}}]},
+                # Random walk
+                {"do": [{"type": "move",
+                         "direction": [{"choice": [-1, 0, 1]}, {"choice": [-1, 0, 1]}]}]},
+            ]},
         },
     },
 }
 
-# The transfer_energy interaction uses the 'energy' attribute.
-# So we need agents to have 'energy' mapped to their wealth.
-# Simplest: just use 'energy' as the wealth attribute.
-spec["agent_types"]["person"]["initial_state"] = {
-    "energy": 10,
-    "perception_radius": 2,
-}
-
-# Update behavior to use 'energy' as wealth
-behavior_code_energy = """
-def agent_behavior(agent, model, agents_nearby):
-    actions = []
-
-    # Give 1 unit to a random neighbor (if we have money)
-    if agent['energy'] > 0 and agents_nearby:
-        target = random.choice([a for a in agents_nearby if a.alive])
-        actions.append({
-            'type': 'interact',
-            'target_id': target.id,
-            'interaction_type': 'transfer_energy',
-            'params': {'amount': 1}
-        })
-
-    # Random walk
-    actions.append({'type': 'move', 'direction': [random.choice([-1,0,1]), random.choice([-1,0,1])]})
-
-    return actions
-"""
-spec["agent_types"]["person"]["behavior_code"] = behavior_code_energy
-
 
 def compute_gini(sim):
     """Gini coefficient: 0 = perfect equality, 1 = perfect inequality."""
-    wealths = sorted(a.get_attribute("energy", 0) for a in sim.agent_manager.get_living_agents())
+    wealths = sorted(a.get_attribute("wealth", 0) for a in sim.agent_manager.get_living_agents())
     n = len(wealths)
     if n == 0 or sum(wealths) == 0:
         return 0
@@ -101,10 +65,10 @@ def run_single():
     sim = Simulation(spec)
     collector = DataCollector(
         model_metrics={"gini": compute_gini},
-        agent_metrics={"energy": lambda a: a.get_attribute("energy", 0)},
+        agent_metrics={"wealth": lambda a: a.get_attribute("wealth", 0)},
     )
     sim.add_collector(collector)
-    results = sim.run(200)
+    sim.run(200)
 
     data = collector.get_model_data()
     agent_data = collector.get_agent_data()
@@ -123,7 +87,7 @@ def run_single():
     # Final wealth distribution
     final_step = max(d["step"] for d in agent_data)
     final_wealths = sorted(
-        [d["energy"] for d in agent_data if d["step"] == final_step],
+        [d["wealth"] for d in agent_data if d["step"] == final_step],
         reverse=True,
     )
 

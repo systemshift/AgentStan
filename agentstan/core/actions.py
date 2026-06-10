@@ -173,8 +173,33 @@ class ActionProcessor:
             details={"from": old_pos, "to": new_pos}
         )
 
+    # Generic effect keys understood by the interact action. Any domain
+    # interaction (predation, trade, infection, ...) is a combination of
+    # these — the kernel knows the mechanics, never the domain.
+    _INTERACT_EFFECT_KEYS = (
+        "kill_target", "self_delta", "target_delta", "transfer",
+    )
+
     def _process_interact(self, agent: Agent, action: Dict, step: int):
-        """Process interaction with another agent"""
+        """Process interaction with another agent.
+
+        Effects are generic and param-driven:
+          - success_rate: float — probability the interaction succeeds (default 1.0)
+          - kill_target: bool — target dies (death cause = interaction_type)
+          - self_delta: {attr: delta, ...} — modify own attributes
+          - target_delta: {attr: delta, ...} — modify target attributes
+          - transfer: {"attribute": name, "amount": N} — move amount from
+            self to target (all-or-nothing if self lacks the amount)
+
+        Example — predation is just a combination of generic effects:
+          {"type": "interact", "target_id": ID, "interaction_type": "predation",
+           "params": {"success_rate": 0.4, "kill_target": True,
+                      "self_delta": {"energy": 12}}}
+
+        Legacy aliases (deprecated): interaction_type "predation" with
+        {success_rate, energy_gain} and "transfer_energy" with {amount}
+        are mapped onto the generic effects above.
+        """
         target_id = action.get("target_id")
         interaction_type = action.get("interaction_type", "generic")
         params = action.get("params", {})
@@ -183,80 +208,101 @@ class ActionProcessor:
         if target is None or not target.alive:
             return
 
-        # Log the interaction
+        effects = self._resolve_interaction_effects(interaction_type, params)
+
+        success = True
+        if "success_rate" in effects:
+            success = self.rng.random() < effects["success_rate"]
+
         self.logger.log_interaction(
             step=step,
             agent_ids=[agent.id, target.id],
             interaction_type=interaction_type,
-            outcome="success",
+            outcome="success" if success else "failure",
             details=params
         )
 
-        # Specific interaction types
-        if interaction_type == "predation":
-            self._handle_predation(agent, target, params, step)
-        elif interaction_type == "transfer_energy":
-            self._handle_energy_transfer(agent, target, params, step)
+        if not success:
+            return
 
-    def _handle_predation(self, predator: Agent, prey: Agent,
-                         params: Dict, step: int):
-        """Handle predation interaction"""
-        success_rate = params.get("success_rate", 0.5)
-        energy_gain = params.get("energy_gain", 10)
-
-        if self.rng.random() < success_rate:
-            # Successful predation
-            prey.kill()
-            predator.modify_attribute("energy", energy_gain)
-
+        if effects.get("kill_target"):
+            target.kill()
             self.logger.log_agent_death(
                 step=step,
-                agent_id=prey.id,
-                agent_type=prey.type,
-                cause="predation"
+                agent_id=target.id,
+                agent_type=target.type,
+                cause=interaction_type,
             )
 
+        for attr, delta in (effects.get("self_delta") or {}).items():
+            old = agent.get_attribute(attr, 0)
+            agent.modify_attribute(attr, delta)
             self.logger.log_state_change(
-                step=step,
-                agent_id=predator.id,
-                attribute="energy",
-                old_value=predator.get_attribute("energy") - energy_gain,
-                new_value=predator.get_attribute("energy"),
-                cause="predation_success"
+                step=step, agent_id=agent.id, attribute=attr,
+                old_value=old, new_value=agent.get_attribute(attr),
+                cause=interaction_type,
             )
 
-    def _handle_energy_transfer(self, source: Agent, target: Agent,
-                               params: Dict, step: int):
-        """Handle energy transfer between agents"""
-        amount = params.get("amount", 5)
+        for attr, delta in (effects.get("target_delta") or {}).items():
+            target.modify_attribute(attr, delta)
 
-        source_energy = source.get_attribute("energy", 0)
-        if source_energy >= amount:
-            source.modify_attribute("energy", -amount)
-            target.modify_attribute("energy", amount)
+        transfer = effects.get("transfer")
+        if transfer:
+            attr = transfer.get("attribute", "energy")
+            amount = transfer.get("amount", 0)
+            if agent.get_attribute(attr, 0) >= amount:
+                agent.modify_attribute(attr, -amount)
+                target.modify_attribute(attr, amount)
 
-            self.logger.log_interaction(
-                step=step,
-                agent_ids=[source.id, target.id],
-                interaction_type="energy_transfer",
-                outcome="success",
-                details={"amount": amount}
-            )
+    def _resolve_interaction_effects(self, interaction_type: str,
+                                     params: Dict) -> Dict:
+        """Map legacy ecology aliases onto generic effects."""
+        if any(k in params for k in self._INTERACT_EFFECT_KEYS):
+            return params
+        if interaction_type == "predation":
+            return {
+                "success_rate": params.get("success_rate", 0.5),
+                "kill_target": True,
+                "self_delta": {"energy": params.get("energy_gain", 10)},
+            }
+        if interaction_type == "transfer_energy":
+            return {
+                "transfer": {"attribute": "energy",
+                             "amount": params.get("amount", 5)},
+            }
+        return params
 
     def _process_reproduce(self, agent: Agent, action: Dict, step: int):
-        """Process reproduction"""
-        energy_cost = action.get("energy_cost", 10)
+        """Process reproduction.
+
+        Generic form:
+          {"type": "reproduce", "cost": {"attribute": "biomass", "amount": 10},
+           "offspring_count": 1, "offspring_state": {...}}
+
+        The offspring is a clone of the parent at the parent's position; it
+        starts with half the parent's cost attribute, then ``offspring_state``
+        overrides are applied. ``energy_cost`` (legacy) is shorthand for a
+        cost on the "energy" attribute.
+        """
         offspring_count = action.get("offspring_count", 1)
 
-        # Check if agent has enough energy
-        if agent.get_attribute("energy", 0) < energy_cost:
+        cost = action.get("cost")
+        if cost is None:
+            cost = {"attribute": "energy", "amount": action.get("energy_cost", 10)}
+        cost_attr = cost.get("attribute", "energy")
+        cost_amount = cost.get("amount", 0)
+
+        # Check the parent can afford it
+        if agent.get_attribute(cost_attr, 0) < cost_amount:
             return
 
         # Create offspring
         for _ in range(offspring_count):
             offspring = agent.clone()
-            offspring.set_attribute("energy", agent.get_attribute("energy", 0) // 2)
+            offspring.set_attribute(cost_attr, agent.get_attribute(cost_attr, 0) // 2)
             offspring.set_attribute("age", 0)
+            for key, value in action.get("offspring_state", {}).items():
+                offspring.set_attribute(key, copy.deepcopy(value))
 
             # Place offspring at parent's position
             offspring.state["position"] = agent.state.get("position")
@@ -270,8 +316,8 @@ class ActionProcessor:
                 agent_type=offspring.type
             )
 
-        # Deduct energy from parent
-        agent.modify_attribute("energy", -energy_cost)
+        # Deduct the cost from the parent
+        agent.modify_attribute(cost_attr, -cost_amount)
 
     def _process_die(self, agent: Agent, action: Dict, step: int):
         """Process agent death"""
