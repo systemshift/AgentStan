@@ -76,6 +76,34 @@ death at zero energy is a top-level `"global_rules"` entry, not engine code:
 ]
 ```
 
+### Packs — save, share, export your work
+
+A **pack** is a single JSON file bundling models (runnable specs) and named
+scenarios (parameter variations) plus metadata. Packs are 100% data — they
+can be stored anywhere, shared, versioned, and run by anyone with the
+library:
+
+```python
+from agentstan.pack import load
+
+pack = load("goblin-economy.pack.json")
+print(pack.models, pack.scenarios)   # ['base'] ['gold-rush', 'crash']
+results = pack.run("gold-rush")      # resolves overrides, seeds, runs
+pack.validate(deep=True)             # full engine validation of every entry
+```
+
+A scenario is just dot-path overrides on a model:
+
+```json
+"scenarios": {
+  "gold-rush": {"model": "base", "steps": 500, "seed": 7,
+                 "overrides": {"agent_types.miner.initial_count": 40}}
+}
+```
+
+The format is versioned (`schema_version`), so packs you export today keep
+loading tomorrow.
+
 ### Python behaviors (escape hatch)
 
 For local power users, an agent type may instead define `behavior_code` — a
