@@ -88,13 +88,17 @@ def _compact_spec(spec: Dict[str, Any]) -> Dict[str, Any]:
             "initial_count": config.get("initial_count"),
             "initial_state": config.get("initial_state"),
         }
-        # Include just the first few lines of behavior code
-        code = config.get("behavior_code", "")
-        lines = code.strip().split("\n")
-        if len(lines) > 15:
-            agent_info["behavior_code_preview"] = "\n".join(lines[:15]) + "\n    ..."
+        if "behavior" in config:
+            # Declarative rules are compact JSON — include them whole
+            agent_info["behavior"] = config["behavior"]
         else:
-            agent_info["behavior_code"] = code
+            # Include just the first few lines of legacy behavior code
+            code = config.get("behavior_code", "")
+            lines = code.strip().split("\n")
+            if len(lines) > 15:
+                agent_info["behavior_code_preview"] = "\n".join(lines[:15]) + "\n    ..."
+            else:
+                agent_info["behavior_code"] = code
         compact["agent_types"][name] = agent_info
 
     return compact

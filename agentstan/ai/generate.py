@@ -87,10 +87,73 @@ def _spec_from_response(data: Dict[str, Any]) -> Dict[str, Any]:
             type_spec["initial_count"] = 10
         if "initial_state" not in type_spec:
             type_spec["initial_state"] = {"energy": 20}
-        if "behavior_code" not in type_spec:
-            raise ValueError(f"Agent type '{agent_type}' missing behavior_code")
+        has_rules = isinstance(type_spec.get("behavior"), dict) and "rules" in type_spec["behavior"]
+        if not has_rules and "behavior_code" not in type_spec:
+            raise ValueError(
+                f"Agent type '{agent_type}' missing behavior — "
+                f'expected "behavior": {{"rules": [...]}}'
+            )
+
+    # Top-level fields the engine understands
+    for key in ("seed", "steps"):
+        if key in data:
+            spec[key] = data[key]
 
     return spec
+
+
+def _make_client(api_key: Optional[str], base_url: Optional[str]):
+    from openai import OpenAI
+
+    kwargs = {}
+    if api_key:
+        kwargs["api_key"] = api_key
+    if base_url:
+        kwargs["base_url"] = base_url
+    return OpenAI(**kwargs)
+
+
+def _chat(client, model: str, messages: list) -> str:
+    response = client.chat.completions.create(
+        model=model,
+        messages=messages,
+        response_format={"type": "json_object"},
+    )
+    return response.choices[0].message.content
+
+
+def _generate_validated(
+    client, model: str, messages: list, repair_attempts: int = 1
+) -> Dict[str, Any]:
+    """
+    Chat until the spec parses AND constructs a Simulation, feeding
+    validation errors back to the LLM for repair.
+
+    Mutates `messages` in place (so multi-turn sessions keep the history).
+    """
+    last_err = None
+    for _ in range(1 + repair_attempts):
+        raw = _chat(client, model, messages)
+        messages.append({"role": "assistant", "content": raw})
+        try:
+            data = _extract_json(raw)
+            spec = _spec_from_response(data)
+            Simulation(spec)  # full engine validation, incl. rule compilation
+            return spec
+        except Exception as e:
+            last_err = e
+            messages.append({
+                "role": "user",
+                "content": (
+                    f"That specification failed validation with this error:\n"
+                    f"{e}\n"
+                    f"Return the corrected, complete JSON specification."
+                ),
+            })
+    raise ValueError(
+        f"Spec failed validation after {1 + repair_attempts} attempt(s). "
+        f"Last error: {last_err}"
+    )
 
 
 def generate(
@@ -98,41 +161,34 @@ def generate(
     model: str = DEFAULT_MODEL,
     api_key: Optional[str] = None,
     base_url: Optional[str] = None,
+    client=None,
+    repair_attempts: int = 1,
 ) -> Dict[str, Any]:
     """
     Send a natural language prompt to an LLM and get back a simulation spec.
 
+    The spec is validated by actually constructing a Simulation (including
+    rule compilation); on failure the error is sent back to the LLM for
+    repair, up to `repair_attempts` times.
+
     Args:
         user_prompt: Natural language description of the desired simulation
-        model: OpenAI model name (default: gpt-5)
-        api_key: OpenAI API key (or set OPENAI_API_KEY env var)
+        model: Model name
+        api_key: API key (or set OPENAI_API_KEY env var)
         base_url: Optional API base URL for compatible endpoints
+        client: Optional pre-built OpenAI-compatible client (overrides
+            api_key/base_url; useful for testing and alternative providers)
+        repair_attempts: How many validation-error round-trips to allow
 
     Returns:
-        Parsed simulation specification dict ready for create_simulation()
+        Validated simulation specification dict (pure JSON data)
     """
-    from openai import OpenAI
-
-    client_kwargs = {}
-    if api_key:
-        client_kwargs["api_key"] = api_key
-    if base_url:
-        client_kwargs["base_url"] = base_url
-
-    client = OpenAI(**client_kwargs)
-
-    response = client.chat.completions.create(
-        model=model,
-        messages=[
-            {"role": "system", "content": get_system_prompt()},
-            {"role": "user", "content": user_prompt},
-        ],
-        response_format={"type": "json_object"},
-    )
-
-    raw = response.choices[0].message.content
-    data = _extract_json(raw)
-    return _spec_from_response(data)
+    client = client or _make_client(api_key, base_url)
+    messages = [
+        {"role": "system", "content": get_system_prompt()},
+        {"role": "user", "content": user_prompt},
+    ]
+    return _generate_validated(client, model, messages, repair_attempts)
 
 
 def run_chat(
@@ -211,10 +267,12 @@ class ChatSession:
         model: str = DEFAULT_MODEL,
         api_key: Optional[str] = None,
         base_url: Optional[str] = None,
+        client=None,
+        repair_attempts: int = 1,
     ):
         self.model = model
-        self.api_key = api_key
-        self.base_url = base_url
+        self.client = client or _make_client(api_key, base_url)
+        self.repair_attempts = repair_attempts
         self.messages = [
             {"role": "system", "content": get_system_prompt()}
         ]
@@ -234,36 +292,17 @@ class ChatSession:
             If run=True: simulation results
             If run=False: parsed specification
         """
-        from openai import OpenAI
-
         self.messages.append({"role": "user", "content": message})
 
-        client_kwargs = {}
-        if self.api_key:
-            client_kwargs["api_key"] = self.api_key
-        if self.base_url:
-            client_kwargs["base_url"] = self.base_url
-
-        client = OpenAI(**client_kwargs)
-
-        response = client.chat.completions.create(
-            model=self.model,
-            messages=self.messages,
-            response_format={"type": "json_object"},
+        self.last_spec = _generate_validated(
+            self.client, self.model, self.messages, self.repair_attempts
         )
-
-        raw = response.choices[0].message.content
-        self.messages.append({"role": "assistant", "content": raw})
-
-        data = _extract_json(raw)
-        self.last_spec = _spec_from_response(data)
 
         if not run:
             return self.last_spec
 
-        run_steps = steps or self.last_spec.get("metadata", {}).get("steps", 200)
-        if steps is None and "steps" in data:
-            run_steps = data["steps"]
+        run_steps = steps or self.last_spec.get("steps") \
+            or self.last_spec.get("metadata", {}).get("steps", 200)
 
         sim = Simulation(self.last_spec)
         self.last_results = sim.run(run_steps)
