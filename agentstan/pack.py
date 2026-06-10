@@ -139,11 +139,17 @@ class Pack:
     # --- Execution ---
 
     def run(self, name: Optional[str] = None, steps: Optional[int] = None,
-            seed: Optional[int] = None) -> Dict[str, Any]:
-        """Run a scenario or model. Arguments override pack values."""
+            seed: Optional[int] = None, collectors: Optional[list] = None) -> Dict[str, Any]:
+        """Run a scenario or model. Arguments override pack values.
+
+        Collectors (DataCollector, FrameRecorder, Observer, ...) are
+        attached to the simulation before it runs.
+        """
         spec = self.spec(name)
         run_steps = steps or spec.pop("steps", 200)
         sim = Simulation(spec, seed=seed if seed is not None else spec.get("seed"))
+        for collector in collectors or []:
+            sim.add_collector(collector)
         return sim.run(run_steps)
 
     def validate(self, deep: bool = False) -> None:

@@ -14,6 +14,7 @@ from .core.simulation import Simulation
 from .core.agent import Agent, AgentManager
 from .core.environment import Environment
 from .core.collectors import DataCollector
+from .core.frames import FrameRecorder
 from .core.scheduler import RandomScheduler, StagedScheduler, SimultaneousScheduler
 from .core.observer import Observer
 from .core.intervention import InterventionEngine
@@ -32,6 +33,7 @@ __all__ = [
     "AgentManager",
     "Environment",
     "DataCollector",
+    "FrameRecorder",
     "RandomScheduler",
     "StagedScheduler",
     "SimultaneousScheduler",
