@@ -13,7 +13,7 @@ class Environment:
     """
 
     def __init__(self, env_type: str, dimensions: Dict[str, Any],
-                 properties: Optional[Dict[str, Any]] = None):
+                 properties: Optional[Dict[str, Any]] = None, rng=None):
         """
         Initialize environment
 
@@ -21,11 +21,14 @@ class Environment:
             env_type: "grid_2d", "continuous_2d", "network", or "custom"
             dimensions: Type-specific dimensions
             properties: Custom environment properties
+            rng: random.Random instance for determinism (defaults to the
+                global random module)
         """
         self.env_type = env_type
         self.dimensions = dimensions
         self.properties = properties or {}
         self.step = 0
+        self._rng = rng if rng is not None else random
 
         # Initialize spatial structure based on type
         if env_type == "grid_2d":
@@ -106,7 +109,7 @@ class Environment:
             edge_prob = self.dimensions.get("edge_probability", 0.1)
             for i in range(node_count):
                 for j in range(i + 1, node_count):
-                    if random.random() < edge_prob:
+                    if self._rng.random() < edge_prob:
                         self.add_edge(i, j)
 
     def add_edge(self, a: int, b: int) -> None:
@@ -129,13 +132,13 @@ class Environment:
     def get_random_position(self) -> Any:
         """Get a random valid position in the environment"""
         if self.env_type == "grid_2d":
-            return (random.randint(0, self.width - 1),
-                   random.randint(0, self.height - 1))
+            return (self._rng.randint(0, self.width - 1),
+                   self._rng.randint(0, self.height - 1))
         elif self.env_type == "continuous_2d":
-            return (random.uniform(0, self.width),
-                   random.uniform(0, self.height))
+            return (self._rng.uniform(0, self.width),
+                   self._rng.uniform(0, self.height))
         elif self.env_type == "network":
-            return random.choice(list(self.nodes.keys()))
+            return self._rng.choice(list(self.nodes.keys()))
         else:
             return None
 
@@ -329,10 +332,11 @@ class Environment:
         }
 
     @staticmethod
-    def from_dict(env_dict: Dict[str, Any]) -> 'Environment':
+    def from_dict(env_dict: Dict[str, Any], rng=None) -> 'Environment':
         """Create environment from dictionary specification"""
         return Environment(
             env_type=env_dict["type"],
             dimensions=env_dict["dimensions"],
-            properties=env_dict.get("properties", {})
+            properties=env_dict.get("properties", {}),
+            rng=rng,
         )

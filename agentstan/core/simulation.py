@@ -4,6 +4,7 @@ Core simulation engine.
 
 import copy
 import time
+import random as _random_module
 import logging
 from typing import Dict, Any, List, Optional, Callable
 
@@ -23,13 +24,21 @@ class Simulation:
     Args:
         specification: Simulation spec dict with environment and agent_types.
         scheduler: Agent activation scheduler (default: RandomScheduler).
+        seed: RNG seed. If set, the run is deterministic: same spec + same
+            seed = same results. Each simulation owns its own RNG, so
+            concurrent simulations never share random state.
     """
 
-    def __init__(self, specification: Dict[str, Any], scheduler=None):
+    def __init__(self, specification: Dict[str, Any], scheduler=None,
+                 seed: Optional[int] = None):
         self._validate_spec(specification)
         self.spec = specification
         self.step = 0
+        self.seed = seed if seed is not None else specification.get("seed")
+        self.rng = _random_module.Random(self.seed)
         self.scheduler = scheduler or RandomScheduler()
+        if getattr(self.scheduler, "rng", None) is None:
+            self.scheduler.rng = self.rng
         self.collectors = []
         self._behavior_cache: Dict[str, Optional[Callable]] = {}
 
@@ -43,6 +52,7 @@ class Simulation:
         self.action_processor = ActionProcessor(
             self.agent_manager, self.environment, self.logger,
             behavior_resolver=self.get_behavior,
+            rng=self.rng,
         )
 
         self._create_agents()
@@ -112,7 +122,7 @@ class Simulation:
 
     def _create_environment(self) -> Environment:
         env_spec = self.spec.get("environment", {})
-        return Environment.from_dict(env_spec)
+        return Environment.from_dict(env_spec, rng=self.rng)
 
     def _create_agents(self):
         agent_types = self.spec.get("agent_types", {})
@@ -133,21 +143,36 @@ class Simulation:
                 self.agent_manager.add_agent(agent)
 
     def get_behavior(self, agent_type: str) -> Optional[Callable]:
-        """Resolve a behavior function for an agent type from the spec, cached."""
+        """Resolve a behavior function for an agent type from the spec, cached.
+
+        Resolution order:
+          1. ``behavior`` — declarative rules (preferred; pure JSON data)
+          2. ``behavior_code`` — Python source string (legacy escape hatch)
+        """
         if agent_type in self._behavior_cache:
             return self._behavior_cache[agent_type]
         type_spec = self.spec.get("agent_types", {}).get(agent_type, {})
+
+        behavior_spec = type_spec.get("behavior")
         behavior_code = type_spec.get("behavior_code", "")
-        func = (
-            self._compile_behavior_function(agent_type, behavior_code)
-            if behavior_code else None
-        )
+
+        if isinstance(behavior_spec, dict) and "rules" in behavior_spec:
+            from .rules import RuleBehavior
+            func = RuleBehavior(behavior_spec["rules"], self,
+                                agent_type=agent_type)
+        elif behavior_code:
+            func = self._compile_behavior_function(
+                agent_type, behavior_code, rng=self.rng
+            )
+        else:
+            func = None
+
         self._behavior_cache[agent_type] = func
         return func
 
     @staticmethod
     def _compile_behavior_function(
-        agent_type: str, behavior_code: str
+        agent_type: str, behavior_code: str, rng=None
     ) -> Optional[Callable]:
         try:
             import random
@@ -164,7 +189,8 @@ class Simulation:
                     "set": set, "True": True, "False": False, "None": None,
                     "isinstance": isinstance, "print": print,
                 },
-                "random": random,
+                # A seeded Random instance is a drop-in for the module API
+                "random": rng if rng is not None else random,
                 "math": math,
             }
 
@@ -274,6 +300,7 @@ class Simulation:
 
         return {
             "spec": self.spec,
+            "seed": self.seed,
             "final_step": self.step,
             "duration": time.time() - start_time,
             "metrics": self.metrics,
@@ -349,7 +376,6 @@ class Simulation:
 
         # Restore agents from checkpoint (replacing the ones __init__ created)
         sim.agent_manager.reset()
-        Agent._next_id = 1
 
         for agent_data in checkpoint["agents"]:
             agent_type = agent_data["type"]

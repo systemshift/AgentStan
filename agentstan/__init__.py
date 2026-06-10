@@ -17,11 +17,14 @@ from .core.collectors import DataCollector
 from .core.scheduler import RandomScheduler, StagedScheduler, SimultaneousScheduler
 from .core.observer import Observer
 from .core.intervention import InterventionEngine
+from .core.rules import RuleBehavior, RuleError
 
 __version__ = "0.1.0"
 
 __all__ = [
     "Simulation",
+    "RuleBehavior",
+    "RuleError",
     "Agent",
     "AgentManager",
     "Environment",

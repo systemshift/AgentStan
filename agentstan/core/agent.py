@@ -14,10 +14,9 @@ class Agent:
     Dynamic agent with arbitrary attributes and behavior function
     """
 
-    _next_id = 1
-
     def __init__(self, agent_type: str, initial_state: Dict[str, Any],
-                 behavior_function: Optional[Callable] = None):
+                 behavior_function: Optional[Callable] = None,
+                 agent_id: Optional[int] = None):
         """
         Initialize agent
 
@@ -25,9 +24,10 @@ class Agent:
             agent_type: Type/species of agent
             initial_state: Initial attribute values
             behavior_function: Function that defines agent behavior
+            agent_id: Explicit ID. If None, the AgentManager assigns one
+                when the agent is added (IDs are per-simulation, not global).
         """
-        self.id = Agent._next_id
-        Agent._next_id += 1
+        self.id = agent_id
 
         self.type = agent_type
         self.alive = True
@@ -166,9 +166,13 @@ class AgentManager:
         self.agents_by_type: Dict[str, List[Agent]] = {}
         self._spatial_hash = SpatialHash()
         self._agents_by_id: Dict[int, Agent] = {}
+        self._next_id = 1
 
     def add_agent(self, agent: Agent):
-        """Add an agent to the simulation"""
+        """Add an agent to the simulation. Assigns an ID if the agent has none."""
+        if agent.id is None:
+            agent.id = self._next_id
+            self._next_id += 1
         self.agents.append(agent)
         self._agents_by_id[agent.id] = agent
 
@@ -275,7 +279,7 @@ class AgentManager:
         self.agents_by_type = {}
         self._agents_by_id = {}
         self._spatial_hash = SpatialHash()
-        Agent._next_id = 1
+        self._next_id = 1
 
     def to_dict(self) -> Dict[str, Any]:
         """Export all agents as dictionary"""

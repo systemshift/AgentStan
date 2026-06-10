@@ -17,7 +17,8 @@ class ActionProcessor:
 
     def __init__(self, agent_manager: AgentManager, environment: Environment,
                  logger: EventLogger,
-                 behavior_resolver: Optional[Callable[[str], Optional[Callable]]] = None):
+                 behavior_resolver: Optional[Callable[[str], Optional[Callable]]] = None,
+                 rng=None):
         """
         Initialize action processor
 
@@ -27,11 +28,14 @@ class ActionProcessor:
             logger: Event logger
             behavior_resolver: Optional callable agent_type -> behavior_function,
                 used by the transform action to look up behavior from the spec.
+            rng: random.Random instance for determinism (defaults to the
+                global random module)
         """
         self.agent_manager = agent_manager
         self.environment = environment
         self.logger = logger
         self.behavior_resolver = behavior_resolver
+        self.rng = rng if rng is not None else random
 
     def process_actions(self, agent: Agent, actions: List[Dict[str, Any]], step: int):
         """
@@ -157,7 +161,7 @@ class ActionProcessor:
         if not neighbors:
             return
 
-        new_pos = random.choice(neighbors)
+        new_pos = self.rng.choice(neighbors)
         old_pos = agent.state["position"]
         agent.state["position"] = new_pos
 
@@ -200,7 +204,7 @@ class ActionProcessor:
         success_rate = params.get("success_rate", 0.5)
         energy_gain = params.get("energy_gain", 10)
 
-        if random.random() < success_rate:
+        if self.rng.random() < success_rate:
             # Successful predation
             prey.kill()
             predator.modify_attribute("energy", energy_gain)
@@ -340,7 +344,9 @@ class ActionProcessor:
         behavior_code = action.get("behavior_code", "")
         if behavior_code:
             from .simulation import Simulation
-            behavior_func = Simulation._compile_behavior_function(new_type, behavior_code)
+            behavior_func = Simulation._compile_behavior_function(
+                new_type, behavior_code, rng=self.rng
+            )
         elif self.behavior_resolver is not None:
             behavior_func = self.behavior_resolver(new_type)
 

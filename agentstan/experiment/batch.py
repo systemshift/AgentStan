@@ -21,12 +21,14 @@ def _set_nested(d: dict, path: str, value: Any) -> dict:
     return out
 
 
-def _run_one(spec: dict, steps: int, run_id: int, params: dict) -> Dict[str, Any]:
+def _run_one(spec: dict, steps: int, run_id: int, params: dict,
+             seed: Optional[int] = None) -> Dict[str, Any]:
     """Run a single simulation and return results with metadata."""
-    sim = Simulation(spec)
+    sim = Simulation(spec, seed=seed)
     results = sim.run(steps)
     return {
         "run_id": run_id,
+        "seed": seed,
         "params": params,
         "summary": results["summary"],
         "final_step": results["final_step"],
@@ -42,6 +44,7 @@ def batch_run(
     vary: Optional[Dict[str, list]] = None,
     max_workers: int = 4,
     output_file: Optional[str] = None,
+    seed: Optional[int] = None,
 ) -> List[Dict[str, Any]]:
     """
     Run a model many times, optionally varying parameters.
@@ -54,6 +57,9 @@ def batch_run(
               e.g. {"agent_types.wolf.initial_count": [5, 10, 15, 20]}
               If None, runs the same spec n_runs times.
         max_workers: Parallel threads.
+        seed: Base seed. Run i uses seed + i, making the whole batch
+              reproducible while keeping runs statistically independent.
+              If None, runs are unseeded (different every time).
 
     Returns:
         List of result dicts, each with run_id, params, summary, history.
@@ -97,7 +103,8 @@ def batch_run(
 
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         futures = {
-            executor.submit(_run_one, s, st, rid, p): rid
+            executor.submit(_run_one, s, st, rid, p,
+                            seed + rid if seed is not None else None): rid
             for s, st, rid, p in jobs
         }
         for future in as_completed(futures):
