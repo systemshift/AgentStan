@@ -37,7 +37,7 @@ Expressions
 - ``"@step"``: current simulation step.
 - Strings not starting with ``$``/``@``: literal strings.
 - Single-key dicts are operators:
-    {"+": [a, b, ...]}  {"-": [a, b]}  {"*": [a, b, ...]}  {"/": [a, b]}
+    {"+": [a, b, ...]}  {"-": [a, b]}  {"*": [a, b, ...]}  {"/": [a, b]}  {"%": [a, b]}
     {"<": [a, b]} {"<=": [a, b]} {">": [a, b]} {">=": [a, b]}
     {"==": [a, b]} {"!=": [a, b]}
     {"and": [...]} {"or": [...]} {"not": x}
@@ -93,7 +93,7 @@ def _cmp(op):
 _BINARY_OPS = {op: _cmp(op) for op in ("<", "<=", ">", ">=", "==", "!=")}
 
 _KNOWN_OPS = set(_BINARY_OPS) | {
-    "+", "-", "*", "/", "and", "or", "not", "min", "max", "abs",
+    "+", "-", "*", "/", "%", "and", "or", "not", "min", "max", "abs",
     "random", "uniform", "randint", "choice",
     "count", "nearest_distance", "total",
 }
@@ -257,6 +257,9 @@ def evaluate(expr: Any, ctx: _Context) -> Any:
         if op == "/":
             a, b = (evaluate(x, ctx) for x in args)
             return a / b
+        if op == "%":
+            a, b = (evaluate(x, ctx) for x in args)
+            return a % b
         if op == "and":
             return all(evaluate(x, ctx) for x in args)
         if op == "or":

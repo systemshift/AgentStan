@@ -219,3 +219,9 @@ def test_behavior_code_is_also_seeded():
     a = Simulation(CODE_SPEC, seed=9).run(25)
     b = Simulation(CODE_SPEC, seed=9).run(25)
     assert a["metrics"]["history"] == b["metrics"]["history"]
+
+
+def test_modulo_operator():
+    ctx = make_ctx({"energy": 10, "position": (5, 5)}, step=20)
+    assert evaluate({"%": ["@step", 10]}, ctx) == 0
+    assert evaluate({"==": [{"%": ["@step", 7]}, 6]}, ctx) is True

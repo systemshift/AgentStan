@@ -50,7 +50,8 @@ condition holds fires, in order:
 - "$attr" — the agent's own state, e.g. "$energy", "$position"
 - "@step" — current step number
 - Comparison: {"<": [a, b]}, {"<=": [a, b]}, {">": [a, b]}, {">=": [a, b]}, {"==": [a, b]}, {"!=": [a, b]}
-- Arithmetic: {"+": [a, b]}, {"-": [a, b]}, {"*": [a, b]}, {"/": [a, b]}
+- Arithmetic: {"+": [a, b]}, {"-": [a, b]}, {"*": [a, b]}, {"/": [a, b]}, {"%": [a, b]}
+  (e.g. "every 10 steps" = {"==": [{"%": ["@step", 10]}, 0]})
 - Logic: {"and": [...]}, {"or": [...]}, {"not": x}
 - Randomness: {"random": []} (0..1), {"uniform": [a, b]}, {"randint": [a, b]}, {"choice": [v1, v2, ...]}
 - Neighbors (within perception_radius):
