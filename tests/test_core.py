@@ -93,3 +93,38 @@ def test_data_collector():
     assert "total_agents" in data[0]
     assert "avg_energy" in data[0]
     assert "count_rabbit" in data[0]
+
+
+EXPLODER = {
+    "environment": {"type": "grid_2d", "dimensions": {"width": 10, "height": 10}},
+    "agent_types": {
+        "amoeba": {
+            "initial_count": 4,
+            "initial_state": {"energy": 100},
+            "behavior": {"rules": [
+                # Unbounded doubling: the population guard must catch this
+                {"do": [{"type": "reproduce", "cost": {"attribute": "energy", "amount": 0}}]},
+            ]},
+        },
+    },
+}
+
+
+def test_max_agents_guard_stops_runaway_growth():
+    sim = Simulation(EXPLODER, seed=1)
+    results = sim.run(100, max_agents=200)
+    assert results["stopped"]["reason"] == "max_agents"
+    assert results["stopped"]["at_step"] < 100
+    assert results["summary"]["final_agents"] > 200  # partial results intact
+
+
+def test_time_limit_guard():
+    sim = Simulation(EXPLODER, seed=1)
+    results = sim.run(10_000, time_limit=0.05)
+    assert results["stopped"]["reason"] == "time_limit"
+
+
+def test_normal_run_reports_no_stop():
+    sim = Simulation(SPEC, seed=1)
+    results = sim.run(10, max_agents=100_000, time_limit=60)
+    assert results["stopped"] is None

@@ -139,18 +139,21 @@ class Pack:
     # --- Execution ---
 
     def run(self, name: Optional[str] = None, steps: Optional[int] = None,
-            seed: Optional[int] = None, collectors: Optional[list] = None) -> Dict[str, Any]:
+            seed: Optional[int] = None, collectors: Optional[list] = None,
+            max_agents: Optional[int] = None,
+            time_limit: Optional[float] = None) -> Dict[str, Any]:
         """Run a scenario or model. Arguments override pack values.
 
         Collectors (DataCollector, FrameRecorder, Observer, ...) are
-        attached to the simulation before it runs.
+        attached to the simulation before it runs. max_agents/time_limit
+        are resource guards passed through to Simulation.run.
         """
         spec = self.spec(name)
         run_steps = steps or spec.pop("steps", 200)
         sim = Simulation(spec, seed=seed if seed is not None else spec.get("seed"))
         for collector in collectors or []:
             sim.add_collector(collector)
-        return sim.run(run_steps)
+        return sim.run(run_steps, max_agents=max_agents, time_limit=time_limit)
 
     def validate(self, deep: bool = False) -> None:
         """

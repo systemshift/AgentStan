@@ -306,18 +306,36 @@ class Simulation:
             "total_agents": total,
         })
 
-    def run(self, steps: int) -> Dict[str, Any]:
-        """Run simulation for N steps. Returns results dict."""
+    def run(self, steps: int, max_agents: Optional[int] = None,
+            time_limit: Optional[float] = None) -> Dict[str, Any]:
+        """Run simulation for N steps. Returns results dict.
+
+        Resource guards (both optional): ``max_agents`` stops the run when
+        the population exceeds it (runaway reproduction), ``time_limit``
+        stops after that many wall-clock seconds. An early stop is reported
+        in results["stopped"] = {"reason", "at_step"} — partial results are
+        still returned in full.
+        """
         start_time = time.time()
+        stopped = None
 
         for _ in range(steps):
             self.run_step()
-            if self.agent_manager.get_total_count() == 0:
+            total = self.agent_manager.get_total_count()
+            if total == 0:
+                break
+            if max_agents is not None and total > max_agents:
+                stopped = {"reason": "max_agents", "at_step": self.step,
+                           "agents": total}
+                break
+            if time_limit is not None and time.time() - start_time > time_limit:
+                stopped = {"reason": "time_limit", "at_step": self.step}
                 break
 
         return {
             "spec": self.spec,
             "seed": self.seed,
+            "stopped": stopped,
             "final_step": self.step,
             "duration": time.time() - start_time,
             "metrics": self.metrics,
