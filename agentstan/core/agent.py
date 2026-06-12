@@ -217,8 +217,12 @@ class AgentManager:
 
         For grid_2d / continuous_2d this uses a spatial hash with Euclidean
         distance. For network environments, "radius" means graph hops and
-        candidates are taken from the BFS frontier.
+        candidates are taken from the BFS frontier. For non-spatial ("none")
+        environments every living agent is "nearby" — radius is ignored.
         """
+        if environment.env_type == "none":
+            return self.get_living_agents()
+
         if environment.env_type == "network":
             target_nodes = set(environment.get_nodes_within_hops(position, int(radius)))
             target_nodes.add(position)
@@ -243,6 +247,9 @@ class AgentManager:
     def get_agents_near_agent(self, agent: Agent, radius: float,
                              environment) -> List[Agent]:
         """Get all living agents within radius of an agent"""
+        if environment.env_type == "none":
+            return [a for a in self.get_living_agents() if a.id != agent.id]
+
         position = agent.state.get("position")
         if position is None:
             return []

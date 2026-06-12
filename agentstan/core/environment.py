@@ -37,6 +37,11 @@ class Environment:
             self._init_continuous_2d()
         elif env_type == "network":
             self._init_network()
+        elif env_type == "none":
+            # Non-spatial: no positions, no movement; every agent can
+            # perceive and interact with every other. The natural fit for
+            # markets, economies, and games where geography is irrelevant.
+            pass
         elif env_type == "custom":
             self._init_custom()
         else:
@@ -336,7 +341,7 @@ class Environment:
         """Create environment from dictionary specification"""
         return Environment(
             env_type=env_dict["type"],
-            dimensions=env_dict["dimensions"],
+            dimensions=env_dict.get("dimensions", {}),
             properties=env_dict.get("properties", {}),
             rng=rng,
         )

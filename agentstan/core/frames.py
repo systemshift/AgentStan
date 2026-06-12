@@ -19,6 +19,8 @@ Frame format (compact arrays to keep payloads small):
 
 For network environments the agent entry is [id, type_index, node_id] and
 the header includes the edge list, so a renderer can lay out the graph.
+For non-spatial ("none") environments the entry is [id, type_index] —
+renderers lay agents out by type (clusters), since there is no geography.
 """
 
 from typing import Any, Dict, List, Optional
@@ -72,14 +74,17 @@ class FrameRecorder:
         if self.environment is None:
             self._capture_environment(simulation)
 
-        is_network = simulation.environment.env_type == "network"
+        env_type = simulation.environment.env_type
         agents = []
         for agent in simulation.agent_manager.get_living_agents():
+            ti = self._type_idx(agent.type)
+            if env_type == "none":
+                agents.append([agent.id, ti])
+                continue
             pos = agent.state.get("position")
             if pos is None:
                 continue
-            ti = self._type_idx(agent.type)
-            if is_network:
+            if env_type == "network":
                 agents.append([agent.id, ti, pos])
             else:
                 x, y = pos

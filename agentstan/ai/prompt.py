@@ -32,7 +32,42 @@ Return ONLY a valid JSON object with this structure:
 }
 ```
 
-Environment types: "grid_2d" (topology "torus" or "bounded"), "continuous_2d", "network".
+## Choosing the environment — match it to the domain
+
+- "grid_2d" / "continuous_2d": ONLY when physical space drives the dynamics —
+  predators chasing prey, fire spreading, flocking, territory.
+  (topology "torus" or "bounded"; agents need perception_radius.)
+- "network": when a contact structure matters — epidemics, opinion spread.
+  (dimensions: {"node_count": N, "topology": "random", "edge_probability": 0.1})
+- "none": NON-SPATIAL — markets, economies, trading games, anything where any
+  agent can interact with any other. No dimensions, no positions, no movement
+  actions, no perception_radius. Every agent sees every other agent.
+
+Economies and markets are almost never grids. A baker does not need to be
+standing next to a farmer to buy wheat. Use "environment": {"type": "none"}
+and pure interact/transfer rules:
+
+```json
+{
+  "environment": {"type": "none"},
+  "agent_types": {
+    "farmer": {
+      "initial_count": 20,
+      "initial_state": {"gold": 10, "wheat": 0},
+      "behavior": {"rules": [
+        {"do": [{"type": "modify_state", "attribute": "wheat", "delta": 1}]},
+        {"when": {"and": [{">": ["$wheat", 0]},
+                            {">": [{"count": {"type": "baker"}}, 0]}]},
+         "do": [{"type": "interact", "target": {"random": {"type": "baker"}},
+                 "interaction_type": "sell_wheat",
+                 "params": {"transfer": {"attribute": "wheat", "amount": 1},
+                            "target_delta": {"gold": -2},
+                            "self_delta": {"gold": 2}}}]}
+      ]}
+    }
+  }
+}
+```
 
 ## The Rule Language
 

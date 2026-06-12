@@ -109,8 +109,11 @@ class Simulation:
 
         env = spec["environment"]
         if "type" not in env:
-            raise ValueError("environment missing 'type'. Options: 'grid_2d', 'continuous_2d', 'network'")
-        if "dimensions" not in env:
+            raise ValueError(
+                "environment missing 'type'. Options: 'grid_2d', "
+                "'continuous_2d', 'network', 'none' (non-spatial)"
+            )
+        if "dimensions" not in env and env["type"] != "none":
             raise ValueError("environment missing 'dimensions'. Expected: {'width': N, 'height': N}")
 
         if "agent_types" not in spec:
