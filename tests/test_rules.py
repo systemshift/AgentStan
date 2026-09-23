@@ -225,3 +225,10 @@ def test_modulo_operator():
     ctx = make_ctx({"energy": 10, "position": (5, 5)}, step=20)
     assert evaluate({"%": ["@step", 10]}, ctx) == 0
     assert evaluate({"==": [{"%": ["@step", 7]}, 6]}, ctx) is True
+
+
+def test_event_trace_is_deterministic():
+    """Same spec + seed must give a byte-identical event trace."""
+    a = Simulation(RULES_SPEC, seed=3).run(15)
+    b = Simulation(RULES_SPEC, seed=3).run(15)
+    assert json.dumps(a["events"], default=str) == json.dumps(b["events"], default=str)

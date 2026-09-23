@@ -5,7 +5,6 @@ Tracks all agent actions, interactions, state changes, and system events
 for detailed post-simulation analysis.
 """
 
-import time
 from typing import Dict, List, Any, Optional
 
 
@@ -27,7 +26,6 @@ class EventLogger:
         self.enabled = enabled
         self.log_level = log_level
         self.events: List[Dict[str, Any]] = []
-        self.start_time = time.time()
 
     def log_event(self, step: int, event_type: str, **kwargs):
         """
@@ -43,7 +41,6 @@ class EventLogger:
 
         event = {
             "step": step,
-            "timestamp": time.time() - self.start_time,
             "type": event_type,
             **kwargs
         }
@@ -173,14 +170,12 @@ class EventLogger:
         return {
             "total_events": len(self.events),
             "event_types": event_types,
-            "duration": self.events[-1]["timestamp"] if self.events else 0,
             "steps_logged": max(e["step"] for e in self.events) if self.events else 0
         }
 
     def clear(self):
         """Clear all logged events"""
         self.events = []
-        self.start_time = time.time()
 
     def export_json(self) -> List[Dict]:
         """Export events as JSON-serializable list"""
@@ -198,13 +193,12 @@ class EventLogger:
         for event in self.events:
             flat_event = {
                 "step": event["step"],
-                "timestamp": event["timestamp"],
                 "event_type": event["type"]
             }
 
             # Add event-specific fields
             for key, value in event.items():
-                if key not in ["step", "timestamp", "type"]:
+                if key not in ["step", "type"]:
                     # Convert complex types to strings
                     if isinstance(value, (list, dict)):
                         flat_event[key] = str(value)
