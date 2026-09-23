@@ -63,7 +63,9 @@ dicts: comparisons (`<`, `>=`, `==` …), arithmetic (`+`, `*` …), logic
 (`and`, `or`, `not`), randomness (`random`, `choice`, `uniform`), and
 neighbor queries (`count`, `nearest_distance`). `"$energy"` reads the agent's
 own state; selectors like `{"nearest": {"type": "wolf"}}` pick a target agent
-for `move_toward`, `move_away`, and `interact`.
+for `move_toward`, `move_away`, and `interact`. All of an agent's rules are
+evaluated first, then its actions apply — a rule reading `$energy` sees the
+value from before this step's changes.
 
 The kernel is domain-blind: interactions are generic effects
 (`kill_target`, `transfer`, `self_delta`, `target_delta`), reproduction
@@ -75,6 +77,52 @@ death at zero energy is a top-level `"global_rules"` entry, not engine code:
   {"when": {"<=": ["$energy", 0]}, "do": [{"type": "die", "cause": "energy_depleted"}]}
 ]
 ```
+
+### Shared state — markets, prices, economies
+
+Models can declare world state and read other agents, so economies are
+plain data too. `"@name"` reads a global, `"&attr"` reads the agent a rule
+selected with `target`, `where` filters queries, and `exchange` is an
+atomic trade — it happens in full or not at all, so no gold or goods are
+ever created by a failed trade:
+
+```json
+{
+  "environment": {"type": "none"},
+  "globals": {"gold_burned": 0},
+  "world_rules": [
+    {"when": {"==": [{"%": ["@step", 5]}, 0]},
+     "do": [{"type": "spawn", "agent_type": "player", "count": 2}]}
+  ],
+  "observables": {
+    "gold_supply": {"sum": {"type": "player", "attr": "gold"}},
+    "potion_price": {"mean": {"type": "shop", "attr": "price"}}
+  },
+  "agent_types": {
+    "player": {"initial_count": 50, "initial_state": {"gold": 20},
+      "behavior": {"rules": [
+        {"prob": 0.6, "do": [{"type": "modify_state", "attribute": "gold", "delta": 5}]},
+        {"target": {"lowest": {"type": "shop", "by": "&price", "where": {">": ["&stock", 0]}}},
+         "when": {">=": ["$gold", "&price"]},
+         "do": [{"type": "interact", "interaction_type": "buy_potion",
+                 "params": {"exchange": {"give": {"gold": "&price"}, "get": {"stock": 1}}}}]}
+      ]}},
+    "shop": {"initial_count": 2, "initial_state": {"gold": 0, "stock": 30, "price": 10}}
+  }
+}
+```
+
+- `globals` + `modify_global`: shared numbers (prices, treasuries, sinks)
+- `world_rules`: run once per step before agents act — price updates, inflows
+- `observables`: named expressions recorded in `metrics.history` every step
+- `sum` / `mean` / `total`: world-wide aggregates, with optional `where`
+- selectors `nearest`, `random`, `lowest`, `highest` (the last two with `by`)
+- `spawn`: create agents from a type's `initial_state`
+
+Specs are validated strictly: unknown actions, fields, interaction params,
+agent types or globals are rejected with the path of the offending rule,
+and a rule that fails while running raises instead of going quiet.
+`Simulation.check(spec)` constructs a spec and smoke-runs a few steps.
 
 ### Packs — save, share, export your work
 
