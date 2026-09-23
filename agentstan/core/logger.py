@@ -113,6 +113,20 @@ class EventLogger:
             cause=cause
         )
 
+    def log_global_change(self, step: int, name: str,
+                          old_value: Any, new_value: Any):
+        """Log a change to a shared global"""
+        if self.log_level == "minimal":
+            return
+
+        self.log_event(
+            step=step,
+            event_type="global_change",
+            name=name,
+            old_value=old_value,
+            new_value=new_value
+        )
+
     def log_environment_change(self, step: int, property_name: str,
                               old_value: Any, new_value: Any):
         """Log a change in environment state"""

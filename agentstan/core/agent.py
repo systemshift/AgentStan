@@ -6,6 +6,8 @@ import copy
 import logging
 from typing import Dict, Any, List, Optional, Callable
 
+from .rules import RuleError
+
 logger = logging.getLogger("agentstan")
 
 
@@ -57,6 +59,10 @@ class Agent:
             # Call the behavior function
             actions = self.behavior_function(self, simulation_state, agents_nearby)
             return actions if actions else []
+        except RuleError:
+            # Declarative rules fail loudly: a broken spec must surface,
+            # not silently turn agents inert.
+            raise
         except Exception as e:
             # Log error but don't crash simulation
             logger.warning(f"Error in agent {self.id} behavior: {e}")

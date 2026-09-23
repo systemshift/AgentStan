@@ -18,7 +18,8 @@ class ActionProcessor:
     def __init__(self, agent_manager: AgentManager, environment: Environment,
                  logger: EventLogger,
                  behavior_resolver: Optional[Callable[[str], Optional[Callable]]] = None,
-                 rng=None):
+                 rng=None, globals: Optional[Dict[str, Any]] = None,
+                 spawner: Optional[Callable[[str, Dict[str, Any]], Agent]] = None):
         """
         Initialize action processor
 
@@ -30,26 +31,39 @@ class ActionProcessor:
                 used by the transform action to look up behavior from the spec.
             rng: random.Random instance for determinism (defaults to the
                 global random module)
+            globals: the simulation's shared globals dict (modify_global)
+            spawner: callable (agent_type, state_overrides) -> new Agent
+                built from the spec, not yet added (spawn)
         """
         self.agent_manager = agent_manager
         self.environment = environment
         self.logger = logger
         self.behavior_resolver = behavior_resolver
         self.rng = rng if rng is not None else random
+        self.globals = globals if globals is not None else {}
+        self.spawner = spawner
 
-    def process_actions(self, agent: Agent, actions: List[Dict[str, Any]], step: int):
+    def process_actions(self, agent: Optional[Agent], actions: List[Dict[str, Any]],
+                        step: int):
         """
         Process all actions for an agent
 
         Args:
-            agent: The agent taking actions
+            agent: The agent taking actions, or None for world actions
+                (world rules may only modify_global and spawn)
             actions: List of action dictionaries
             step: Current simulation step
         """
         for action in actions:
             action_type = action.get("type")
 
-            if action_type == "move":
+            if action_type == "modify_global":
+                self._process_modify_global(action, step)
+            elif action_type == "spawn":
+                self._process_spawn(agent, action, step)
+            elif agent is None:
+                continue
+            elif action_type == "move":
                 self._process_move(agent, action, step)
             elif action_type == "move_to":
                 self._process_move_to(agent, action, step)
@@ -177,7 +191,7 @@ class ActionProcessor:
     # interaction (predation, trade, infection, ...) is a combination of
     # these — the kernel knows the mechanics, never the domain.
     _INTERACT_EFFECT_KEYS = (
-        "kill_target", "self_delta", "target_delta", "transfer",
+        "kill_target", "self_delta", "target_delta", "transfer", "exchange",
     )
 
     def _process_interact(self, agent: Agent, action: Dict, step: int):
@@ -189,7 +203,13 @@ class ActionProcessor:
           - self_delta: {attr: delta, ...} — modify own attributes
           - target_delta: {attr: delta, ...} — modify target attributes
           - transfer: {"attribute": name, "amount": N} — move amount from
-            self to target (all-or-nothing if self lacks the amount)
+            self to target
+          - exchange: {"give": {attr: n, ...}, "get": {attr: n, ...}} — a
+            two-sided trade: self pays ``give`` to the target and receives
+            ``get`` from it
+
+        transfer and exchange are preconditions: if either side can't cover
+        its amounts, the whole interaction fails and no effect applies.
 
         Example — predation is just a combination of generic effects:
           {"type": "interact", "target_id": ID, "interaction_type": "predation",
@@ -209,6 +229,17 @@ class ActionProcessor:
             return
 
         effects = self._resolve_interaction_effects(interaction_type, params)
+
+        # Preconditions: a trade that can't be paid for doesn't happen at all.
+        # Checked before the success roll so a failed trade burns no RNG.
+        shortfall = self._shortfall(agent, target, effects)
+        if shortfall:
+            self.logger.log_interaction(
+                step=step, agent_ids=[agent.id, target.id],
+                interaction_type=interaction_type, outcome="failure",
+                details={**params, "reason": shortfall},
+            )
+            return
 
         success = True
         if "success_rate" in effects:
@@ -250,9 +281,34 @@ class ActionProcessor:
         if transfer:
             attr = transfer.get("attribute", "energy")
             amount = transfer.get("amount", 0)
-            if agent.get_attribute(attr, 0) >= amount:
+            agent.modify_attribute(attr, -amount)
+            target.modify_attribute(attr, amount)
+
+        exchange = effects.get("exchange")
+        if exchange:
+            for attr, amount in (exchange.get("give") or {}).items():
                 agent.modify_attribute(attr, -amount)
                 target.modify_attribute(attr, amount)
+            for attr, amount in (exchange.get("get") or {}).items():
+                target.modify_attribute(attr, -amount)
+                agent.modify_attribute(attr, amount)
+
+    @staticmethod
+    def _shortfall(agent: Agent, target: Agent, effects: Dict) -> Optional[str]:
+        """Why the agents can't cover a transfer/exchange, or None."""
+        owed = []  # (payer, attribute, amount)
+        transfer = effects.get("transfer")
+        if transfer:
+            owed.append((agent, transfer.get("attribute", "energy"),
+                         transfer.get("amount", 0)))
+        exchange = effects.get("exchange") or {}
+        owed += [(agent, a, n) for a, n in (exchange.get("give") or {}).items()]
+        owed += [(target, a, n) for a, n in (exchange.get("get") or {}).items()]
+        for payer, attr, amount in owed:
+            if (payer.get_attribute(attr) or 0) < amount:
+                side = "self" if payer is agent else "target"
+                return f"{side} lacks {amount} {attr}"
+        return None
 
     def _resolve_interaction_effects(self, interaction_type: str,
                                      params: Dict) -> Dict:
@@ -279,10 +335,11 @@ class ActionProcessor:
           {"type": "reproduce", "cost": {"attribute": "biomass", "amount": 10},
            "offspring_count": 1, "offspring_state": {...}}
 
-        The offspring is a clone of the parent at the parent's position; it
-        starts with half the parent's cost attribute, then ``offspring_state``
-        overrides are applied. ``energy_cost`` (legacy) is shorthand for a
-        cost on the "energy" attribute.
+        Each offspring is a clone of the parent at the parent's position.
+        The cost is paid per offspring and is what that offspring starts
+        with, so reproduction conserves the cost attribute. Then
+        ``offspring_state`` overrides are applied. ``energy_cost`` (legacy)
+        is shorthand for a cost on the "energy" attribute.
         """
         offspring_count = action.get("offspring_count", 1)
 
@@ -292,15 +349,15 @@ class ActionProcessor:
         cost_attr = cost.get("attribute", "energy")
         cost_amount = cost.get("amount", 0)
 
-        # Check the parent can afford it
-        if agent.get_attribute(cost_attr, 0) < cost_amount:
+        # Check the parent can afford every offspring
+        if (agent.get_attribute(cost_attr) or 0) < cost_amount * offspring_count:
             return
 
-        # Create offspring
         for _ in range(offspring_count):
             offspring = agent.clone()
-            offspring.set_attribute(cost_attr, agent.get_attribute(cost_attr, 0) // 2)
-            offspring.set_attribute("age", 0)
+            offspring.set_attribute(cost_attr, cost_amount)
+            if "age" in offspring.state:
+                offspring.set_attribute("age", 0)
             for key, value in action.get("offspring_state", {}).items():
                 offspring.set_attribute(key, copy.deepcopy(value))
 
@@ -308,6 +365,7 @@ class ActionProcessor:
             offspring.state["position"] = agent.state.get("position")
 
             self.agent_manager.add_agent(offspring)
+            agent.modify_attribute(cost_attr, -cost_amount)
 
             self.logger.log_agent_birth(
                 step=step,
@@ -316,8 +374,43 @@ class ActionProcessor:
                 agent_type=offspring.type
             )
 
-        # Deduct the cost from the parent
-        agent.modify_attribute(cost_attr, -cost_amount)
+    def _process_spawn(self, agent: Optional[Agent], action: Dict, step: int):
+        """Create new agents of a spec-defined type.
+
+          {"type": "spawn", "agent_type": "player", "count": 3,
+           "state": {"gold": 50}}
+
+        New agents start from the type's initial_state, with ``state``
+        overrides applied, at a random position (or their state's). Unlike
+        reproduce, spawn costs nothing: it is how models express inflows —
+        new players joining, arrivals, immigration.
+        """
+        if self.spawner is None:
+            return
+        count = int(action.get("count", 1))
+        for _ in range(max(count, 0)):
+            new_agent = self.spawner(action["agent_type"], action.get("state") or {})
+            self.agent_manager.add_agent(new_agent)
+            self.logger.log_agent_birth(
+                step=step,
+                parent_id=agent.id if agent is not None else None,
+                child_id=new_agent.id,
+                agent_type=new_agent.type,
+            )
+
+    def _process_modify_global(self, action: Dict, step: int):
+        """Set or change a shared global: {"name": g, "value"|"delta": x}."""
+        name = action.get("name")
+        if name is None:
+            return
+        old = self.globals.get(name)
+        if action.get("value") is not None:
+            self.globals[name] = action["value"]
+        elif action.get("delta") is not None:
+            self.globals[name] = (old or 0) + action["delta"]
+        else:
+            return
+        self.logger.log_global_change(step, name, old, self.globals[name])
 
     def _process_die(self, agent: Agent, action: Dict, step: int):
         """Process agent death"""

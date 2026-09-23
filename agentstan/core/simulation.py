@@ -13,6 +13,7 @@ from .agent import Agent, AgentManager
 from .actions import ActionProcessor
 from .logger import EventLogger
 from .scheduler import RandomScheduler
+from .rules import RuleBehavior, RuleError, validate_expression
 
 log = logging.getLogger("agentstan")
 
@@ -41,6 +42,8 @@ class Simulation:
             self.scheduler.rng = self.rng
         self.collectors = []
         self._behavior_cache: Dict[str, Optional[Callable]] = {}
+        # Shared world state, readable in rules as "@name"
+        self.globals: Dict[str, Any] = copy.deepcopy(specification.get("globals") or {})
 
         # Initialize core systems
         self.environment = self._create_environment()
@@ -53,9 +56,14 @@ class Simulation:
             self.agent_manager, self.environment, self.logger,
             behavior_resolver=self.get_behavior,
             rng=self.rng,
+            globals=self.globals,
+            spawner=self._new_agent,
         )
 
-        self._create_agents()
+        # Compile every behavior up front so a bad spec fails here, not
+        # mid-run (and not only for types that happen to have agents).
+        for agent_type in specification["agent_types"]:
+            self.get_behavior(agent_type)
 
         # Global rules: declarative rules applied to every living agent each
         # step (after behaviors). Replaces hardcoded world laws — e.g. death
@@ -64,10 +72,30 @@ class Simulation:
         #                     "do": [{"type": "die", "cause": "energy_depleted"}]}]
         self.global_rules = None
         if specification.get("global_rules"):
-            from .rules import RuleBehavior
             self.global_rules = RuleBehavior(
-                specification["global_rules"], self, agent_type="<global_rules>"
+                specification["global_rules"], self, path="global_rules",
+                can_sense=False,
             )
+
+        # World rules: run once per step, before agents act, with no agent —
+        # prices, faucets, arrivals. Only globals and aggregates are visible.
+        self.world_rules = None
+        if specification.get("world_rules"):
+            self.world_rules = RuleBehavior(
+                specification["world_rules"], self, path="world_rules",
+                world=True,
+            )
+
+        # Observables: named world-level expressions recorded every step
+        self.observables: Dict[str, Any] = specification.get("observables") or {}
+        for name, expr in self.observables.items():
+            validate_expression(
+                expr, f"observables['{name}']",
+                globals_=set(self.globals),
+                agent_types=set(specification["agent_types"]),
+            )
+
+        self._create_agents()
 
         # Optional systems (attached after init)
         self.intervention_engine = None
@@ -122,6 +150,21 @@ class Simulation:
                 '{"agent_types": {"name": {"initial_count": N, "initial_state": {...}, "behavior_code": "..."}}}'
             )
 
+        globals_ = spec.get("globals")
+        if globals_ is not None:
+            if not isinstance(globals_, dict):
+                raise ValueError("'globals' must be a dict of name -> initial value")
+            for name, value in globals_.items():
+                if name == "step":
+                    raise ValueError("'step' is reserved (read it as \"@step\")")
+                if not isinstance(value, (int, float, str, bool)) or value is None:
+                    raise ValueError(
+                        f"globals['{name}'] must be a number, string or bool, got {value!r}"
+                    )
+        observables = spec.get("observables")
+        if observables is not None and not isinstance(observables, dict):
+            raise ValueError("'observables' must be a dict of name -> expression")
+
         agent_types = spec["agent_types"]
         if not agent_types:
             raise ValueError("agent_types is empty — define at least one agent type")
@@ -140,22 +183,22 @@ class Simulation:
         return Environment.from_dict(env_spec, rng=self.rng)
 
     def _create_agents(self):
-        agent_types = self.spec.get("agent_types", {})
+        for agent_type, type_spec in self.spec.get("agent_types", {}).items():
+            for _ in range(type_spec.get("initial_count", 0)):
+                self.agent_manager.add_agent(self._new_agent(agent_type))
 
-        for agent_type, type_spec in agent_types.items():
-            initial_count = type_spec.get("initial_count", 0)
-            initial_state = type_spec.get("initial_state", {})
-            behavior_func = self.get_behavior(agent_type)
-
-            for _ in range(initial_count):
-                agent = Agent(
-                    agent_type=agent_type,
-                    initial_state=copy.deepcopy(initial_state),
-                    behavior_function=behavior_func,
-                )
-                if agent.state.get("position") is None:
-                    agent.state["position"] = self.environment.get_random_position()
-                self.agent_manager.add_agent(agent)
+    def _new_agent(self, agent_type: str,
+                   overrides: Optional[Dict[str, Any]] = None) -> Agent:
+        """Build (but don't add) an agent of a spec type: initial_state plus
+        overrides, at a random position unless its state places it."""
+        type_spec = self.spec["agent_types"][agent_type]
+        state = copy.deepcopy(type_spec.get("initial_state", {}))
+        state.update(copy.deepcopy(overrides or {}))
+        agent = Agent(agent_type=agent_type, initial_state=state,
+                      behavior_function=self.get_behavior(agent_type))
+        if agent.state.get("position") is None:
+            agent.state["position"] = self.environment.get_random_position()
+        return agent
 
     def get_behavior(self, agent_type: str) -> Optional[Callable]:
         """Resolve a behavior function for an agent type from the spec, cached.
@@ -172,7 +215,6 @@ class Simulation:
         behavior_code = type_spec.get("behavior_code", "")
 
         if isinstance(behavior_spec, dict) and "rules" in behavior_spec:
-            from .rules import RuleBehavior
             func = RuleBehavior(behavior_spec["rules"], self,
                                 agent_type=agent_type)
         elif behavior_code:
@@ -240,6 +282,11 @@ class Simulation:
         if self.llm_engine:
             self.llm_engine.prepare_batch(self)
 
+        if self.world_rules:
+            actions = self.world_rules.decide(None)
+            if actions:
+                self.action_processor.process_actions(None, actions, self.step)
+
         agents = self.scheduler.get_agents(self.agent_manager)
         simultaneous = getattr(self.scheduler, "simultaneous", False)
 
@@ -272,16 +319,25 @@ class Simulation:
             collector.collect(self)
 
     def _get_agent_actions(self, agent: Agent) -> List[Dict[str, Any]]:
-        perception_radius = agent.get_attribute("perception_radius", 5)
-        agents_nearby = self.agent_manager.get_agents_near_agent(
-            agent, perception_radius, self.environment
-        )
+        radius = agent.get_attribute("perception_radius", 5)
+        behavior = agent.behavior_function
+
+        def nearby():
+            return self.agent_manager.get_agents_near_agent(
+                agent, radius, self.environment
+            )
+
+        if isinstance(behavior, RuleBehavior):
+            # Rules compute neighbors only if a rule actually looks
+            return behavior.decide(agent, nearby) if agent.alive else []
+
         sim_state = {
             "step": self.step,
             "environment": self.environment.to_dict(),
             "agent_counts": self.agent_manager.get_counts(),
+            "globals": self.globals,
         }
-        return agent.execute_behavior(sim_state, agents_nearby)
+        return agent.execute_behavior(sim_state, nearby())
 
     def _apply_global_rules(self):
         """Apply spec-level global rules to every living agent.
@@ -291,23 +347,39 @@ class Simulation:
         """
         if not self.global_rules:
             return
-        sim_state = {
-            "step": self.step,
-            "agent_counts": self.agent_manager.get_counts(),
-        }
         for agent in self.agent_manager.get_living_agents():
-            actions = self.global_rules(agent, sim_state, [])
+            actions = self.global_rules.decide(agent, [])
             if actions:
                 self.action_processor.process_actions(agent, actions, self.step)
 
     def _record_metrics(self):
         counts = self.agent_manager.get_counts()
         total = self.agent_manager.get_total_count()
-        self.metrics["history"].append({
+        entry = {
             "step": self.step,
             "agent_counts": counts,
             "total_agents": total,
-        })
+        }
+        if self.globals:
+            entry["globals"] = dict(self.globals)
+        if self.observables:
+            entry["observables"] = self.evaluate_observables()
+        self.metrics["history"].append(entry)
+
+    def evaluate_observables(self) -> Dict[str, Any]:
+        """Current value of every spec observable."""
+        from .rules import _Context, evaluate, _located
+        ctx = _Context(agent=None, nearby=[], rng=self.rng,
+                       env=self.environment, step=self.step,
+                       globals=self.globals, manager=self.agent_manager,
+                       can_sense=False)
+        out = {}
+        for name, expr in self.observables.items():
+            try:
+                out[name] = evaluate(expr, ctx)
+            except (RuleError, TypeError, ValueError, ArithmeticError) as e:
+                raise _located(e, f"observables['{name}']", ctx) from e
+        return out
 
     def run(self, steps: int, max_agents: Optional[int] = None,
             time_limit: Optional[float] = None) -> Dict[str, Any]:
@@ -325,7 +397,7 @@ class Simulation:
         for _ in range(steps):
             self.run_step()
             total = self.agent_manager.get_total_count()
-            if total == 0:
+            if total == 0 and not self.world_rules:
                 break
             if max_agents is not None and total > max_agents:
                 stopped = {"reason": "max_agents", "at_step": self.step,
@@ -338,6 +410,7 @@ class Simulation:
         return {
             "spec": self.spec,
             "seed": self.seed,
+            "globals": dict(self.globals),
             "stopped": stopped,
             "final_step": self.step,
             "duration": time.time() - start_time,
@@ -362,13 +435,14 @@ class Simulation:
                 "agent_counts": self.agent_manager.get_counts(),
                 "total_agents": self.agent_manager.get_total_count(),
                 "environment": self.environment.properties,
+                "globals": dict(self.globals),
             }
 
             if callback:
                 callback(state)
             yield state
 
-            if self.agent_manager.get_total_count() == 0:
+            if self.agent_manager.get_total_count() == 0 and not self.world_rules:
                 break
             if delay > 0:
                 time.sleep(delay)
@@ -378,19 +452,29 @@ class Simulation:
             "step": self.step,
             "environment": self.environment.to_dict(),
             "agents": self.agent_manager.to_dict(),
+            "globals": dict(self.globals),
             "metrics": self.metrics,
         }
 
     def save(self, path: str) -> None:
-        """Save simulation state to a JSON file for later resuming."""
+        """Save simulation state to a JSON file for later resuming.
+
+        The checkpoint includes the RNG state and agent IDs, so a loaded
+        simulation continues exactly as the original would have.
+        """
         import json
+        version, internal, gauss = self.rng.getstate()
         checkpoint = {
             "spec": self.spec,
+            "seed": self.seed,
             "step": self.step,
+            "rng_state": [version, list(internal), gauss],
+            "next_id": self.agent_manager._next_id,
             "agents": [
-                {"type": a.type, "alive": a.alive, "state": a.state}
+                {"id": a.id, "type": a.type, "alive": a.alive, "state": a.state}
                 for a in self.agent_manager.agents
             ],
+            "globals": self.globals,
             "environment_properties": self.environment.properties,
             "metrics": self.metrics,
         }
@@ -401,35 +485,38 @@ class Simulation:
     def load(cls, path: str) -> "Simulation":
         """Load a saved simulation and resume from where it left off."""
         import json
-        import copy
-        from .agent import Agent
 
         with open(path) as f:
             checkpoint = json.load(f)
 
-        sim = cls(checkpoint["spec"])
-
-        # Restore step counter
+        sim = cls(checkpoint["spec"], seed=checkpoint.get("seed"))
         sim.step = checkpoint["step"]
 
-        # Restore agents from checkpoint (replacing the ones __init__ created)
+        # Replace the agents __init__ created with the saved ones
         sim.agent_manager.reset()
-
         for agent_data in checkpoint["agents"]:
-            agent_type = agent_data["type"]
+            state = copy.deepcopy(agent_data["state"])
+            if isinstance(state.get("position"), list):
+                state["position"] = tuple(state["position"])
             agent = Agent(
-                agent_type=agent_type,
-                initial_state=copy.deepcopy(agent_data["state"]),
-                behavior_function=sim.get_behavior(agent_type),
+                agent_type=agent_data["type"],
+                initial_state=state,
+                behavior_function=sim.get_behavior(agent_data["type"]),
+                agent_id=agent_data.get("id"),
             )
             agent.alive = agent_data["alive"]
             sim.agent_manager.add_agent(agent)
+        if "next_id" in checkpoint:
+            sim.agent_manager._next_id = checkpoint["next_id"]
 
-        # Restore environment properties
+        sim.globals.clear()
+        sim.globals.update(checkpoint.get("globals") or {})
         for k, v in checkpoint.get("environment_properties", {}).items():
             sim.environment.set_property(k, v)
-
-        # Restore metrics
         sim.metrics = checkpoint["metrics"]
+
+        if "rng_state" in checkpoint:
+            version, internal, gauss = checkpoint["rng_state"]
+            sim.rng.setstate((version, tuple(internal), gauss))
 
         return sim

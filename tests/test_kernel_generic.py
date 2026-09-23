@@ -145,4 +145,5 @@ def test_reproduce_with_generic_cost():
     parent = next(c for c in cells if c.get_attribute("generation") is None)
     child = next(c for c in cells if c.get_attribute("generation") == 1)
     assert parent["biomass"] == 60   # 100 - 40 cost
-    assert child["biomass"] == 50    # half of parent's 100 at clone time
+    assert child["biomass"] == 40    # the cost is what the child starts with
+    assert parent["biomass"] + child["biomass"] == 100  # conserved
