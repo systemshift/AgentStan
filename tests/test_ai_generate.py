@@ -108,3 +108,18 @@ def test_chat_session_runs_and_keeps_history():
     assert session.last_spec is not None
     roles = [m["role"] for m in session.messages]
     assert roles[0] == "system" and "assistant" in roles
+
+
+def test_every_full_spec_in_the_system_prompt_runs():
+    """The prompt is the LLM's spec reference — its examples must be valid."""
+    import json as _json
+    import re as _re
+    from agentstan import Simulation
+    from agentstan.ai.prompt import get_system_prompt
+
+    blocks = _re.findall(r"```json\n(.*?)```", get_system_prompt(), _re.S)
+    specs = [_json.loads(b) for b in blocks if '"agent_types"' in b and '"environment"' in b
+             and "..." not in b]
+    assert len(specs) >= 2
+    for spec in specs:
+        Simulation.check(spec, smoke_steps=30)

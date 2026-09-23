@@ -44,62 +44,53 @@ Return ONLY a valid JSON object with this structure:
   actions, no perception_radius. Every agent sees every other agent.
 
 Economies and markets are almost never grids. A baker does not need to be
-standing next to a farmer to buy wheat. Use "environment": {"type": "none"}
-and pure interact/transfer rules:
-
-```json
-{
-  "environment": {"type": "none"},
-  "agent_types": {
-    "farmer": {
-      "initial_count": 20,
-      "initial_state": {"gold": 10, "wheat": 0},
-      "behavior": {"rules": [
-        {"do": [{"type": "modify_state", "attribute": "wheat", "delta": 1}]},
-        {"when": {"and": [{">": ["$wheat", 0]},
-                            {">": [{"count": {"type": "baker"}}, 0]}]},
-         "do": [{"type": "interact", "target": {"random": {"type": "baker"}},
-                 "interaction_type": "sell_wheat",
-                 "params": {"transfer": {"attribute": "wheat", "amount": 1},
-                            "target_delta": {"gold": -2},
-                            "self_delta": {"gold": 2}}}]}
-      ]}
-    }
-  }
-}
-```
+standing next to a farmer to buy wheat. Use "environment": {"type": "none"}.
 
 ## The Rule Language
 
 Each agent type's behavior is a list of rules. Every step, each rule whose
 condition holds fires, in order:
 
-    {"when": <condition>, "prob": <0..1>, "do": [<actions>]}
+    {"target": <selector>, "when": <condition>, "prob": <0..1>, "do": [<actions>]}
 
 - "when" is optional — a rule without it always fires.
 - "prob" is optional — the rule fires with that probability.
+- "target" is optional — select ONE other agent first; if none matches, the
+  rule does not fire. Inside the rule "&attr" reads the target's attributes
+  and interact/move_toward/move_away act on it.
 - "do" is a list of actions (below).
+- All of an agent's rules are evaluated first, then the actions apply. A rule
+  reading "$energy" sees the value from before this step's changes.
 
-### Expressions (used in "when" and action fields)
+### Expressions (used in "when", "prob" and ANY action field, at any depth)
 
-- "$attr" — the agent's own state, e.g. "$energy", "$position"
-- "@step" — current step number
+- "$attr" — this agent's state, e.g. "$energy". Every attribute you read must
+  be in initial_state, or arithmetic on it fails.
+- "&attr" — the other agent's state (the rule's target, or the candidate inside
+  a "where"/"by")
+- "@step" — current step. "@name" — a global (must be declared in "globals")
 - Comparison: {"<": [a, b]}, {"<=": [a, b]}, {">": [a, b]}, {">=": [a, b]}, {"==": [a, b]}, {"!=": [a, b]}
 - Arithmetic: {"+": [a, b]}, {"-": [a, b]}, {"*": [a, b]}, {"/": [a, b]}, {"%": [a, b]}
   (e.g. "every 10 steps" = {"==": [{"%": ["@step", 10]}, 0]})
-- Logic: {"and": [...]}, {"or": [...]}, {"not": x}
+- Logic: {"and": [...]}, {"or": [...]}, {"not": x}; {"min": [...]}, {"max": [...]}, {"abs": x}
 - Randomness: {"random": []} (0..1), {"uniform": [a, b]}, {"randint": [a, b]}, {"choice": [v1, v2, ...]}
-- Neighbors (within perception_radius):
-  - {"count": {"type": "wolf"}} — how many wolves nearby ({} matches any type)
-  - {"nearest_distance": {"type": "wolf"}} — distance to nearest wolf (infinity if none)
-- {"total": "wolf"} — global living count of a type
+- Neighbors (within perception_radius; in "none" worlds, everyone):
+  - {"count": QUERY} — how many match
+  - {"nearest_distance": QUERY} — distance to the nearest match (infinity if none)
+- World-wide: {"total": "wolf"} or {"total": QUERY} — living agents matching;
+  {"sum": {"type": "player", "attr": "gold"}}, {"mean": {"attr": "gold"}}
+  (sum/mean also accept "where")
 
-### Selectors (pick one nearby agent as a target)
+A QUERY is {"type": "shop"} plus an optional filter on the candidate:
+{"type": "shop", "where": {">": ["&stock", 0]}}. {} matches any agent.
 
-- {"nearest": {"type": "rabbit"}} — the closest rabbit
-- {"random": {"type": "rabbit"}} — a random nearby rabbit
+### Selectors (pick one agent)
 
-### Actions
+- {"nearest": QUERY}, {"random": QUERY}
+- {"lowest": {"type": "shop", "by": "&price"}}, {"highest": {..., "by": EXPR}}
+  (QUERY keys plus "by")
+
+### Actions — these fields ONLY; unknown fields or params are rejected
 
 ```json
 {"type": "move", "direction": [{"choice": [-1, 0, 1]}, {"choice": [-1, 0, 1]}]}
@@ -107,11 +98,93 @@ condition holds fires, in order:
 {"type": "move_away", "from": {"nearest": {"type": "wolf"}}}
 {"type": "move_random"}
 {"type": "modify_state", "attribute": "energy", "delta": 2}
-{"type": "modify_state", "attribute": "color", "value": "red"}
-{"type": "interact", "target": {"nearest": {"type": "rabbit"}}, "interaction_type": "predation", "params": {"success_rate": 0.4, "energy_gain": 12}}
-{"type": "reproduce", "energy_cost": 15, "offspring_count": 1}
-{"type": "die", "cause": "starvation"}
+{"type": "modify_state", "attribute": "mood", "value": "happy"}
+{"type": "modify_global", "name": "treasury", "delta": 5}
+{"type": "interact", "target": SELECTOR, "interaction_type": "any_label", "params": {...}}
+{"type": "reproduce", "cost": {"attribute": "energy", "amount": 15}, "offspring_count": 1}
+{"type": "spawn", "agent_type": "player", "count": 2, "state": {"gold": 50}}
 {"type": "transform", "new_type": "infected", "new_state": {"days_infected": 0}}
+{"type": "die", "cause": "starvation"}
+```
+
+interact params (all optional, combine freely):
+- "success_rate": 0..1 — chance the interaction happens
+- "kill_target": true
+- "self_delta" / "target_delta": {"attr": change, ...}
+- "transfer": {"attribute": "gold", "amount": 5} — self gives target
+- "exchange": {"give": {"gold": 10}, "get": {"potion": 1}} — a trade: self
+  gives "give" to the target and receives "get" from it
+transfer and exchange only happen if both sides can cover them; otherwise the
+WHOLE interaction fails and nothing changes. So a trade never creates goods or
+money from nothing, and you never need to check stock by hand.
+
+reproduce: the parent pays cost.amount per offspring, and each offspring
+starts with that amount. spawn creates agents for free from the type's
+initial_state — use it for inflows (new players joining, arrivals).
+
+### World state (top-level keys)
+
+- "globals": {"price": 10, "treasury": 0} — shared numbers, read as "@price"
+- "world_rules": rules run ONCE per step before agents act, with no agent:
+  no "$", no neighbors, no target; actions only modify_global and spawn.
+  Use them for prices, taxes, events, inflows.
+- "global_rules": rules applied to EVERY agent after behaviors (world laws,
+  e.g. death at zero energy).
+- "observables": {"gold_supply": {"sum": {"attr": "gold"}}} — named
+  expressions recorded every step. Always add observables for the quantities
+  the user cares about (money supply, prices, inequality, stock).
+
+## Example: Game Economy (non-spatial)
+
+```json
+{
+  "name": "Potion Shop Economy",
+  "description": "Players earn gold on quests and buy potions; the shop sets its price from its stock, and repair fees drain gold into a sink.",
+  "seed": 42,
+  "environment": {"type": "none"},
+  "globals": {"gold_burned": 0},
+  "world_rules": [
+    {"when": {"==": [{"%": ["@step", 5]}, 0]},
+     "do": [{"type": "spawn", "agent_type": "player", "count": 2}]}
+  ],
+  "observables": {
+    "gold_supply": {"sum": {"type": "player", "attr": "gold"}},
+    "potion_price": {"mean": {"type": "shop", "attr": "price"}},
+    "gold_burned": "@gold_burned",
+    "broke_players": {"total": {"type": "player", "where": {"<": ["&gold", 5]}}}
+  },
+  "agent_types": {
+    "player": {
+      "initial_count": 50,
+      "initial_state": {"gold": 20, "potions": 0},
+      "behavior": {"rules": [
+        {"prob": 0.6, "do": [{"type": "modify_state", "attribute": "gold", "delta": {"randint": [3, 8]}}]},
+        {"target": {"lowest": {"type": "shop", "by": "&price", "where": {">": ["&stock", 0]}}},
+         "when": {"and": [{"<": ["$potions", 3]}, {">=": ["$gold", "&price"]}]},
+         "do": [{"type": "interact", "interaction_type": "buy_potion",
+                 "params": {"exchange": {"give": {"gold": "&price"}, "get": {"stock": 1}}}},
+                {"type": "modify_state", "attribute": "potions", "delta": 1}]},
+        {"when": {">": ["$potions", 0]}, "prob": 0.3,
+         "do": [{"type": "modify_state", "attribute": "potions", "delta": -1}]},
+        {"when": {">=": ["$gold", 4]}, "prob": 0.2,
+         "do": [{"type": "modify_state", "attribute": "gold", "delta": -4},
+                {"type": "modify_global", "name": "gold_burned", "delta": 4}]}
+      ]}
+    },
+    "shop": {
+      "initial_count": 2,
+      "initial_state": {"gold": 0, "stock": 30, "price": 10},
+      "behavior": {"rules": [
+        {"when": {"<": ["$stock", 10]},
+         "do": [{"type": "modify_state", "attribute": "stock", "delta": 5},
+                {"type": "modify_state", "attribute": "price", "delta": 1}]},
+        {"when": {"and": [{">": ["$stock", 40]}, {">": ["$price", 2]}]},
+         "do": [{"type": "modify_state", "attribute": "price", "delta": -1}]}
+      ]}
+    }
+  },
+  "steps": 200
+}
 ```
 
 ## Example: Predator-Prey
@@ -136,7 +209,7 @@ condition holds fires, in order:
         {"when": {"==": [{"count": {"type": "wolf"}}, 0]},
          "do": [{"type": "move", "direction": [{"choice": [-1, 0, 1]}, {"choice": [-1, 0, 1]}]}]},
         {"when": {">": ["$energy", 30]}, "prob": 0.08,
-         "do": [{"type": "reproduce", "energy_cost": 15, "offspring_count": 1}]},
+         "do": [{"type": "reproduce", "cost": {"attribute": "energy", "amount": 15}}]},
         {"do": [{"type": "modify_state", "attribute": "energy", "delta": -0.8}]},
         {"when": {"<=": ["$energy", 0]},
          "do": [{"type": "die", "cause": "starvation"}]}
@@ -149,14 +222,15 @@ condition holds fires, in order:
         {"when": {"<=": [{"nearest_distance": {"type": "rabbit"}}, 0]},
          "do": [{"type": "interact", "target": {"nearest": {"type": "rabbit"}},
                  "interaction_type": "predation",
-                 "params": {"success_rate": 0.4, "energy_gain": 12}}]},
+                 "params": {"success_rate": 0.4, "kill_target": true,
+                            "self_delta": {"energy": 12}}}]},
         {"when": {"and": [{">": [{"nearest_distance": {"type": "rabbit"}}, 0]},
                             {"<": [{"nearest_distance": {"type": "rabbit"}}, 999]}]},
          "do": [{"type": "move_toward", "target": {"nearest": {"type": "rabbit"}}}]},
         {"when": {"==": [{"count": {"type": "rabbit"}}, 0]},
          "do": [{"type": "move", "direction": [{"choice": [-1, 0, 1]}, {"choice": [-1, 0, 1]}]}]},
         {"when": {">": ["$energy", 50]}, "prob": 0.04,
-         "do": [{"type": "reproduce", "energy_cost": 20, "offspring_count": 1}]},
+         "do": [{"type": "reproduce", "cost": {"attribute": "energy", "amount": 20}}]},
         {"do": [{"type": "modify_state", "attribute": "energy", "delta": -1.0}]},
         {"when": {"<=": ["$energy", 0]},
          "do": [{"type": "die", "cause": "starvation"}]}
@@ -183,6 +257,8 @@ condition holds fires, in order:
 3. Every expression operator dict has exactly one key
 4. Use "$attribute" to read the agent's own state
 5. Every agent type needs initial_count, initial_state (with perception_radius if it senses neighbors), and behavior
+6. Use ONLY the actions, fields and interact params listed above — never invent new ones. If something seems inexpressible, model it with globals, attributes and exchange.
+7. Every "$attr" you read must appear in that type's initial_state; every "@name" must be declared in "globals"; every type you reference must be defined in agent_types (agent types created only by spawn/transform can have initial_count 0).
 """
 
 

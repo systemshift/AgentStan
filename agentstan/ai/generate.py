@@ -138,7 +138,9 @@ def _generate_validated(
         try:
             data = _extract_json(raw)
             spec = _spec_from_response(data)
-            Simulation(spec)  # full engine validation, incl. rule compilation
+            # full engine validation plus a short guarded run, so runtime
+            # rule errors are repaired too, not just construction errors
+            Simulation.check(spec)
             return spec
         except Exception as e:
             last_err = e
@@ -167,8 +169,8 @@ def generate(
     """
     Send a natural language prompt to an LLM and get back a simulation spec.
 
-    The spec is validated by actually constructing a Simulation (including
-    rule compilation); on failure the error is sent back to the LLM for
+    The spec is validated by constructing a Simulation and running a few
+    guarded steps (Simulation.check); on failure the error is sent back to the LLM for
     repair, up to `repair_attempts` times.
 
     Args:

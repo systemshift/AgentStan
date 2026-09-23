@@ -123,6 +123,19 @@ class Simulation:
         """Attach an LLMBehaviorEngine for LLM-powered agents."""
         self.llm_engine = engine
 
+    @classmethod
+    def check(cls, spec: Dict[str, Any], smoke_steps: int = 10,
+              max_agents: int = 10000, time_limit: float = 5.0) -> None:
+        """Validate a spec fully: construct it, then run a few guarded steps
+        so runtime rule errors (e.g. arithmetic on a missing attribute)
+        surface too. Raises on any problem; hitting a resource guard is not
+        an error. Does not mutate ``spec``."""
+        spec = copy.deepcopy(spec)
+        spec.pop("steps", None)
+        sim = cls(spec)
+        if smoke_steps > 0:
+            sim.run(smoke_steps, max_agents=max_agents, time_limit=time_limit)
+
     @staticmethod
     def _validate_spec(spec: Dict[str, Any]) -> None:
         """Validate specification with clear error messages."""

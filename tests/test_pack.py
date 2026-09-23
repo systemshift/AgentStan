@@ -151,3 +151,17 @@ def test_pack_file_is_pure_json(tmp_path):
         text = f.read()
     assert "def " not in text and "lambda" not in text
     json.loads(text)
+
+
+def test_deep_validate_catches_runtime_rule_errors():
+    spec = {
+        "environment": {"type": "none"},
+        "agent_types": {"a": {"initial_count": 1, "initial_state": {},
+                              "behavior": {"rules": [
+                                  {"do": [{"type": "modify_state", "attribute": "x",
+                                           "value": {"+": ["$missing", 1]}}]}]}}},
+    }
+    pack = Pack.new("broken-at-runtime", spec)
+    pack.validate(deep=True, smoke_steps=0)  # constructs fine
+    with pytest.raises(PackError, match="doesn't have"):
+        pack.validate(deep=True)

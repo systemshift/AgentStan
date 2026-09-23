@@ -155,19 +155,19 @@ class Pack:
             sim.add_collector(collector)
         return sim.run(run_steps, max_agents=max_agents, time_limit=time_limit)
 
-    def validate(self, deep: bool = False) -> None:
+    def validate(self, deep: bool = False, smoke_steps: int = 10) -> None:
         """
         Re-validate the pack. With deep=True, every model and scenario is
-        resolved and constructed as a real Simulation (catches bad rules,
-        bad environments — everything the engine would reject).
+        resolved, constructed as a real Simulation (catches bad rules, bad
+        environments — everything the engine would reject) and run for
+        ``smoke_steps`` guarded steps, so errors that only appear at
+        runtime surface too.
         """
         _validate_pack(self.data)
         if deep:
             for name in self.models + self.scenarios:
-                spec = self.spec(name)
-                spec.pop("steps", None)
                 try:
-                    Simulation(spec)
+                    Simulation.check(self.spec(name), smoke_steps=smoke_steps)
                 except Exception as e:
                     raise PackError(f"'{name}' fails engine validation: {e}")
 
