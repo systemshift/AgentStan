@@ -164,8 +164,10 @@ class Simulation:
 
         if "environment" not in spec:
             raise ValueError(
-                "Specification missing 'environment'. Expected: "
-                '{"environment": {"type": "grid_2d", "dimensions": {"width": N, "height": N}}, "agent_types": {...}}'
+                "Specification missing 'environment'. Expected e.g. "
+                '{"type": "none"} (markets, economies), '
+                '{"type": "grid_2d", "dimensions": {"width": N, "height": N}}, '
+                'or {"type": "network", "dimensions": {"node_count": N, "topology": "random"}}'
             )
 
         env = spec["environment"]
@@ -181,6 +183,16 @@ class Simulation:
             raise ValueError(
                 "Specification missing 'agent_types'. Expected: "
                 '{"agent_types": {"name": {"initial_count": N, "initial_state": {...}, "behavior_code": "..."}}}'
+            )
+
+        known = {"environment", "agent_types", "globals", "world_rules",
+                 "global_rules", "observables", "seed", "steps", "metadata",
+                 "log_level", "name", "description"}
+        unknown = set(spec) - known
+        if unknown:
+            raise ValueError(
+                f"Specification has unknown top-level keys {sorted(unknown)} — "
+                f"allowed: {sorted(known)}"
             )
 
         globals_ = spec.get("globals")
@@ -202,9 +214,23 @@ class Simulation:
         if not agent_types:
             raise ValueError("agent_types is empty — define at least one agent type")
 
+        type_keys = {"initial_count", "initial_state", "behavior", "behavior_code",
+                     "description"}
         for name, config in agent_types.items():
             if not isinstance(config, dict):
                 raise ValueError(f"agent_types['{name}'] must be a dict")
+            unknown = set(config) - type_keys
+            if unknown:
+                raise ValueError(
+                    f"agent_types['{name}'] has unknown keys {sorted(unknown)} — "
+                    f"allowed: {sorted(type_keys)}"
+                )
+            behavior = config.get("behavior")
+            if behavior is not None and (not isinstance(behavior, dict)
+                                         or set(behavior) != {"rules"}):
+                raise ValueError(
+                    f"agent_types['{name}'].behavior must be {{\"rules\": [...]}}"
+                )
             if "initial_count" not in config:
                 raise ValueError(f"agent_types['{name}'] missing 'initial_count'")
             count = config["initial_count"]

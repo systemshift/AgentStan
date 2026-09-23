@@ -46,59 +46,25 @@ def _extract_json(text: str) -> Dict[str, Any]:
 
 
 def _spec_from_response(data: Dict[str, Any]) -> Dict[str, Any]:
-    """Normalize LLM response into a valid simulation specification."""
-    # The LLM response should already be close to our spec format.
-    # Normalize any variations.
-    spec = {}
+    """Normalize an LLM response into a spec.
 
-    # Metadata
-    spec["metadata"] = {
-        "name": data.get("name", data.get("metadata", {}).get("name", "Simulation")),
-        "description": data.get("description", data.get("metadata", {}).get("description", "")),
-    }
-
-    # Environment
-    if "environment" in data:
-        spec["environment"] = data["environment"]
-    else:
-        spec["environment"] = {
-            "type": "grid_2d",
-            "dimensions": {"width": 40, "height": 40, "topology": "torus"},
-        }
-
-    # Ensure environment has required fields
-    env = spec["environment"]
-    if "type" not in env:
-        env["type"] = "grid_2d"
-    if "dimensions" not in env:
-        env["dimensions"] = {"width": 40, "height": 40}
-
-    # Agent types
-    if "agent_types" in data:
-        spec["agent_types"] = data["agent_types"]
-    elif "agents" in data:
+    Only cosmetic normalization: top-level name/description move into
+    metadata, and "agents" is accepted for "agent_types". Everything else
+    passes through untouched — no guessed defaults — so validation can
+    report what's wrong and the repair loop can fix it.
+    """
+    if not isinstance(data, dict):
+        raise ValueError("the specification must be a JSON object")
+    spec = {k: v for k, v in data.items() if k not in ("name", "description", "agents")}
+    if "agent_types" not in spec and "agents" in data:
         spec["agent_types"] = data["agents"]
-    else:
-        raise ValueError("LLM response missing 'agent_types' or 'agents' field")
 
-    # Validate each agent type has required fields
-    for agent_type, type_spec in spec["agent_types"].items():
-        if "initial_count" not in type_spec:
-            type_spec["initial_count"] = 10
-        if "initial_state" not in type_spec:
-            type_spec["initial_state"] = {"energy": 20}
-        has_rules = isinstance(type_spec.get("behavior"), dict) and "rules" in type_spec["behavior"]
-        if not has_rules and "behavior_code" not in type_spec:
-            raise ValueError(
-                f"Agent type '{agent_type}' missing behavior — "
-                f'expected "behavior": {{"rules": [...]}}'
-            )
-
-    # Top-level fields the engine understands
-    for key in ("seed", "steps"):
+    metadata = dict(data.get("metadata") or {})
+    for key in ("name", "description"):
         if key in data:
-            spec[key] = data[key]
-
+            metadata.setdefault(key, data[key])
+    metadata.setdefault("name", "Simulation")
+    spec["metadata"] = metadata
     return spec
 
 

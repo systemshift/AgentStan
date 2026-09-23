@@ -76,14 +76,32 @@ def test_generate_gives_up_after_repair_attempts():
     assert len(client.calls) == 2
 
 
-def test_generate_rejects_missing_behavior():
-    no_behavior = {
-        "environment": {"type": "grid_2d", "dimensions": {"width": 5, "height": 5}},
-        "agent_types": {"fox": {"initial_count": 2, "initial_state": {}}},
+def test_generate_keeps_passive_types_and_shared_state():
+    """Types without behavior (a shop, a resource) are legitimate, and the
+    normalizer must pass globals/world_rules/observables through."""
+    spec_in = {
+        "name": "shop world",
+        "environment": {"type": "none"},
+        "globals": {"tax": 1},
+        "world_rules": [{"do": [{"type": "modify_global", "name": "tax", "delta": 1}]}],
+        "observables": {"tax": "@tax"},
+        "agent_types": {"shop": {"initial_count": 1, "initial_state": {"stock": 3}}},
     }
-    client = StubClient([json.dumps(no_behavior)])
-    with pytest.raises(ValueError, match="missing behavior"):
-        generate("simulate foxes", client=client, repair_attempts=0)
+    spec = generate("a shop", client=StubClient([json.dumps(spec_in)]))
+    assert spec["metadata"]["name"] == "shop world"
+    for key in ("globals", "world_rules", "observables"):
+        assert spec[key] == spec_in[key]
+
+
+def test_generate_does_not_invent_defaults():
+    """A missing environment is an error for the LLM to repair, not a grid."""
+    no_env = {"agent_types": {"a": {"initial_count": 1, "initial_state": {}}}}
+    fixed = dict(no_env, environment={"type": "none"})
+    client = StubClient([json.dumps(no_env), json.dumps(fixed)])
+    spec = generate("x", client=client)
+    assert spec["environment"] == {"type": "none"}
+    repair_prompts = [m["content"] for m in client.calls[1]["messages"] if m["role"] == "user"]
+    assert any("missing 'environment'" in text for text in repair_prompts)
 
 
 def test_spec_from_response_accepts_legacy_behavior_code():
