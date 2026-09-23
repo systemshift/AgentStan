@@ -139,7 +139,7 @@ initial_state — use it for inflows (new players joining, arrivals).
 ```json
 {
   "name": "Potion Shop Economy",
-  "description": "Players earn gold on quests and buy potions; the shop sets its price from its stock, and repair fees drain gold into a sink.",
+  "description": "Players earn gold on quests and buy potions from the cheapest shop in stock; shops restock and raise prices when stock runs low, cut them when it piles up. Repair fees are a gold sink, new players keep joining.",
   "seed": 42,
   "environment": {"type": "none"},
   "globals": {"gold_burned": 0},
@@ -175,10 +175,11 @@ initial_state — use it for inflows (new players joining, arrivals).
       "initial_count": 2,
       "initial_state": {"gold": 0, "stock": 30, "price": 10},
       "behavior": {"rules": [
+        {"when": {"<": ["$stock", 30]},
+         "do": [{"type": "modify_state", "attribute": "stock", "delta": 8}]},
         {"when": {"<": ["$stock", 10]},
-         "do": [{"type": "modify_state", "attribute": "stock", "delta": 5},
-                {"type": "modify_state", "attribute": "price", "delta": 1}]},
-        {"when": {"and": [{">": ["$stock", 40]}, {">": ["$price", 2]}]},
+         "do": [{"type": "modify_state", "attribute": "price", "delta": 1}]},
+        {"when": {"and": [{">": ["$stock", 25]}, {">": ["$price", 2]}]},
          "do": [{"type": "modify_state", "attribute": "price", "delta": -1}]}
       ]}
     }
