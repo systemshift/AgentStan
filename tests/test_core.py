@@ -128,3 +128,22 @@ def test_normal_run_reports_no_stop():
     sim = Simulation(SPEC, seed=1)
     results = sim.run(10, max_agents=100_000, time_limit=60)
     assert results["stopped"] is None
+
+
+def test_neighbors_found_across_torus_seam():
+    """Distance wraps on a torus, so neighbor queries must wrap too."""
+    for width in (40, 42):  # 42 is not a multiple of the hash cell size
+        spec = {
+            "environment": {"type": "grid_2d",
+                            "dimensions": {"width": width, "height": width,
+                                           "topology": "torus"}},
+            "agent_types": {
+                "a": {"initial_count": 1, "initial_state": {"position": (0, 0)}},
+                "b": {"initial_count": 1, "initial_state": {"position": (width - 3, width - 1)}},
+            },
+        }
+        sim = Simulation(spec, seed=0)
+        sim.agent_manager.rebuild_spatial_index()
+        a = sim.agent_manager.get_agents_by_type("a")[0]
+        near = sim.agent_manager.get_agents_near_agent(a, 4, sim.environment)
+        assert [n.type for n in near] == ["b"]

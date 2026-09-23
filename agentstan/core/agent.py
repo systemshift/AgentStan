@@ -143,19 +143,40 @@ class SpatialHash:
                 self.cells[key] = []
             self.cells[key].append(agent)
 
-    def query(self, position, radius: float) -> List['Agent']:
-        """Return agents within radius of position."""
+    def query(self, position, radius: float, wrap=None) -> List['Agent']:
+        """Return candidate agents within radius of position.
+
+        ``wrap`` is (width, height) for torus worlds: the query window is
+        split across the seam so agents on the far edge are found.
+        """
         if position is None:
             return []
-        cx, cy = self._key(position)
-        r = int(radius // self.cell_size) + 1
+        x, y = position
+        cells = set()
+        for x0, x1 in self._spans(x - radius, x + radius, wrap[0] if wrap else None):
+            for y0, y1 in self._spans(y - radius, y + radius, wrap[1] if wrap else None):
+                for cx in range(int(x0 // self.cell_size), int(x1 // self.cell_size) + 1):
+                    for cy in range(int(y0 // self.cell_size), int(y1 // self.cell_size) + 1):
+                        cells.add((cx, cy))
         result = []
-        for dx in range(-r, r + 1):
-            for dy in range(-r, r + 1):
-                cell = self.cells.get((cx + dx, cy + dy))
-                if cell:
-                    result.extend(cell)
+        for key in sorted(cells):
+            cell = self.cells.get(key)
+            if cell:
+                result.extend(cell)
         return result
+
+    @staticmethod
+    def _spans(lo: float, hi: float, size) -> List[tuple]:
+        """Coordinate intervals covering [lo, hi], wrapped into [0, size)."""
+        if size is None:
+            return [(lo, hi)]
+        if hi - lo >= size:
+            return [(0, size)]
+        if lo < 0:
+            return [(lo + size, size), (0, hi)]
+        if hi >= size:
+            return [(lo, size), (0, hi - size)]
+        return [(lo, hi)]
 
 
 class AgentManager:
@@ -231,7 +252,10 @@ class AgentManager:
                 if a.alive and a.state.get("position") in target_nodes
             ]
 
-        candidates = self._spatial_hash.query(position, radius)
+        wrap = None
+        if environment.env_type == "grid_2d" and environment.topology == "torus":
+            wrap = (environment.width, environment.height)
+        candidates = self._spatial_hash.query(position, radius, wrap)
         nearby = []
         for agent in candidates:
             if not agent.alive:
