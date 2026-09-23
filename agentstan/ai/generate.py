@@ -10,7 +10,7 @@ from .prompt import get_system_prompt
 from ..core.simulation import Simulation
 
 
-DEFAULT_MODEL = "gpt-5.5"
+from .llm import make_client, resolve_model, chat_json
 
 
 def _extract_json(text: str) -> Dict[str, Any]:
@@ -69,23 +69,11 @@ def _spec_from_response(data: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def _make_client(api_key: Optional[str], base_url: Optional[str]):
-    from openai import OpenAI
-
-    kwargs = {}
-    if api_key:
-        kwargs["api_key"] = api_key
-    if base_url:
-        kwargs["base_url"] = base_url
-    return OpenAI(**kwargs)
+    return make_client(api_key, base_url)
 
 
 def _chat(client, model: str, messages: list) -> str:
-    response = client.chat.completions.create(
-        model=model,
-        messages=messages,
-        response_format={"type": "json_object"},
-    )
-    return response.choices[0].message.content
+    return chat_json(client, model, messages)
 
 
 def _generate_validated(
@@ -126,7 +114,7 @@ def _generate_validated(
 
 def generate(
     user_prompt: str,
-    model: str = DEFAULT_MODEL,
+    model: Optional[str] = None,
     api_key: Optional[str] = None,
     base_url: Optional[str] = None,
     client=None,
@@ -141,7 +129,7 @@ def generate(
 
     Args:
         user_prompt: Natural language description of the desired simulation
-        model: Model name
+        model: Model name (default: $AGENTSTAN_MODEL, else gpt-5.5)
         api_key: API key (or set OPENAI_API_KEY env var)
         base_url: Optional API base URL for compatible endpoints
         client: Optional pre-built OpenAI-compatible client (overrides
@@ -152,6 +140,7 @@ def generate(
         Validated simulation specification dict (pure JSON data)
     """
     client = client or _make_client(api_key, base_url)
+    model = resolve_model(model)
     messages = [
         {"role": "system", "content": get_system_prompt()},
         {"role": "user", "content": user_prompt},
@@ -162,7 +151,7 @@ def generate(
 def run_chat(
     user_prompt: str,
     steps: Optional[int] = None,
-    model: str = DEFAULT_MODEL,
+    model: Optional[str] = None,
     api_key: Optional[str] = None,
     base_url: Optional[str] = None,
     verbose: bool = True,
@@ -232,13 +221,13 @@ class ChatSession:
 
     def __init__(
         self,
-        model: str = DEFAULT_MODEL,
+        model: Optional[str] = None,
         api_key: Optional[str] = None,
         base_url: Optional[str] = None,
         client=None,
         repair_attempts: int = 1,
     ):
-        self.model = model
+        self.model = resolve_model(model)
         self.client = client or _make_client(api_key, base_url)
         self.repair_attempts = repair_attempts
         self.messages = [

@@ -7,6 +7,7 @@ Supports batched parallel execution and per-agent memory.
 
 import json
 import re
+from .llm import make_client, resolve_model
 from typing import Dict, Any, List, Optional, Callable
 from concurrent.futures import ThreadPoolExecutor
 
@@ -21,8 +22,12 @@ Return a JSON array of actions. Available actions:
 - {"type": "move_to", "target": [x, y]} — move toward position
 - {"type": "move_random"} — random step
 - {"type": "modify_state", "attribute": "energy", "delta": 5} — change your state
-- {"type": "interact", "target_id": ID, "interaction_type": "predation", "params": {"success_rate": 0.4, "energy_gain": 10}}
-- {"type": "reproduce", "energy_cost": 15, "offspring_count": 1}
+- {"type": "interact", "target_id": ID, "interaction_type": "any_label", "params": {...}}
+  params (all optional): "success_rate": 0..1, "kill_target": true,
+  "self_delta": {"attr": change}, "target_delta": {"attr": change},
+  "transfer": {"attribute": "gold", "amount": 5},
+  "exchange": {"give": {"gold": 10}, "get": {"item": 1}}
+- {"type": "reproduce", "cost": {"attribute": "energy", "amount": 15}}
 - {"type": "die", "cause": "reason"}
 
 Return ONLY a JSON object with an "actions" key containing the array. Example:
@@ -143,7 +148,7 @@ class LLMBehaviorEngine:
     Manages LLM-based agent behavior with batched execution.
 
     Usage:
-        engine = LLMBehaviorEngine(model="gpt-5.5", budget=LLMBudget(max_calls_total=500))
+        engine = LLMBehaviorEngine(budget=LLMBudget(max_calls_total=500))
         behavior = engine.create_behavior(personality="aggressive hunter", goals="hunt prey")
         for wolf in sim.agent_manager.get_agents_by_type("wolf"):
             wolf.behavior_function = behavior
@@ -152,13 +157,15 @@ class LLMBehaviorEngine:
 
     def __init__(
         self,
-        model: str = "gpt-5.5",
+        model: Optional[str] = None,
         api_key: Optional[str] = None,
         base_url: Optional[str] = None,
         budget: Optional[LLMBudget] = None,
         max_concurrent: int = 10,
+        client=None,
     ):
-        self.model = model
+        self.model = resolve_model(model)
+        self.client = client
         self.api_key = api_key
         self.base_url = base_url
         self.budget = budget or LLMBudget()
@@ -260,15 +267,10 @@ class LLMBehaviorEngine:
 
     def _call_llm(self, agent_id: int, prompt: str) -> List[Dict[str, Any]]:
         """Single synchronous LLM call."""
-        from openai import OpenAI
-
-        kwargs = {}
-        if self.api_key:
-            kwargs["api_key"] = self.api_key
-        if self.base_url:
-            kwargs["base_url"] = self.base_url
-
-        client = OpenAI(**kwargs)
+        if self.client is None:
+            # one client (and connection pool) for the whole run
+            self.client = make_client(self.api_key, self.base_url)
+        client = self.client
 
         response = client.chat.completions.create(
             model=self.model,

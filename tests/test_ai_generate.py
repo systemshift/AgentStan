@@ -141,3 +141,22 @@ def test_every_full_spec_in_the_system_prompt_runs():
     assert len(specs) >= 2
     for spec in specs:
         Simulation.check(spec, smoke_steps=30)
+
+
+def test_interpret_and_validate_use_injected_client(monkeypatch):
+    from agentstan import Simulation
+    from agentstan.ai import interpret, validate
+
+    monkeypatch.setenv("AGENTSTAN_MODEL", "some-local-model")
+    spec = {"environment": {"type": "none"}, "globals": {"price": 3},
+            "observables": {"price": "@price"},
+            "agent_types": {"a": {"initial_count": 2, "initial_state": {}}}}
+    results = Simulation(spec, seed=0).run(3)
+
+    client = StubClient(["Prices stayed flat.",
+                         json.dumps({"valid": True, "issues": [], "suggestions": ["x"]})])
+    assert interpret(results, client=client) == "Prices stayed flat."
+    assert validate(spec, "a flat market", client=client)["valid"] is True
+    assert [c["model"] for c in client.calls] == ["some-local-model"] * 2
+    prompt = client.calls[0]["messages"][0]["content"]
+    assert '"observables"' in prompt and '"final_globals"' in prompt

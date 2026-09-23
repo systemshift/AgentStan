@@ -9,14 +9,16 @@ import json
 from typing import Dict, Any, Optional
 
 
-DEFAULT_MODEL = "gpt-5.5"
+from .llm import make_client, resolve_model
 
 
 def validate(
     spec: Dict[str, Any],
     description: str,
-    model: str = DEFAULT_MODEL,
+    model: Optional[str] = None,
     api_key: Optional[str] = None,
+    base_url: Optional[str] = None,
+    client=None,
 ) -> Dict[str, Any]:
     """
     Validate a simulation spec against a natural language description.
@@ -24,15 +26,15 @@ def validate(
     Args:
         spec: Simulation specification dict.
         description: Original user description of what the model should do.
-        model: OpenAI model name.
-        api_key: OpenAI API key.
+        model: Model name (default: $AGENTSTAN_MODEL, else gpt-5.5).
+        api_key: API key (or set OPENAI_API_KEY).
+        base_url, client: any OpenAI-compatible endpoint or client.
 
     Returns:
         Dict with 'valid' (bool), 'issues' (list of strings), 'suggestions' (list).
     """
-    from openai import OpenAI
-
-    client = OpenAI(api_key=api_key) if api_key else OpenAI()
+    client = client or make_client(api_key, base_url)
+    model = resolve_model(model)
 
     # Strip behavior_code to reduce tokens (just show function signatures)
     compact_spec = _compact_spec(spec)

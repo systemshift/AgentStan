@@ -137,7 +137,7 @@ def cmd_generate(args):
     from .ai.generate import generate
     from .pack import Pack
 
-    spec = generate(args.prompt, model=args.model)
+    spec = generate(args.prompt, model=args.model, base_url=args.base_url)
     name = spec.get("metadata", {}).get("name") or "model"
     pack = Pack.new(name, spec, description=spec.get("metadata", {}).get("description", ""))
     text = pack.to_json()
@@ -185,7 +185,8 @@ def build_parser():
 
     p = sub.add_parser("generate", help="generate a model from a description (needs agentstan[ai])")
     p.add_argument("prompt")
-    p.add_argument("--model", default="gpt-5.5", help="LLM model name")
+    p.add_argument("--model", help="LLM model (default: $AGENTSTAN_MODEL, else gpt-5.5)")
+    p.add_argument("--base-url", help="OpenAI-compatible API base URL")
     p.add_argument("--output", "-o", help="write the pack here (default: stdout)")
     p.set_defaults(func=cmd_generate)
     return parser

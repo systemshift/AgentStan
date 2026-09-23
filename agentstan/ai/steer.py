@@ -8,6 +8,7 @@ a researcher turning knobs mid-experiment.
 
 import json
 import logging
+from .llm import make_client, resolve_model
 from typing import Dict, Any, List, Optional
 
 from ..core.observer import Observer, SimulationSnapshot
@@ -49,14 +50,18 @@ class Steerer:
         self,
         goal: str,
         check_every: int = 20,
-        model: str = "gpt-5.5",
+        model: Optional[str] = None,
         api_key: Optional[str] = None,
         max_interventions_per_check: int = 3,
+        base_url: Optional[str] = None,
+        client=None,
     ):
         self.goal = goal
         self.check_every = check_every
-        self.model = model
+        self.model = resolve_model(model)
         self.api_key = api_key
+        self.base_url = base_url
+        self.client = client
         self.max_interventions = max_interventions_per_check
 
         self.simulation = None
@@ -144,10 +149,10 @@ class Steerer:
         return "\n".join(parts)
 
     def _call_llm(self, prompt: str) -> str:
-        """Call OpenAI and return response text."""
-        from openai import OpenAI
-
-        client = OpenAI(api_key=self.api_key) if self.api_key else OpenAI()
+        """Call the LLM and return response text."""
+        if self.client is None:
+            self.client = make_client(self.api_key, self.base_url)
+        client = self.client
 
         system = STEERER_SYSTEM_PROMPT.format(max_interventions=self.max_interventions)
 
