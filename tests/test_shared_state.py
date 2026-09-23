@@ -448,3 +448,27 @@ def test_action_repeating_the_rule_target_acts_on_the_same_agent():
     results = _sim(spec, seed=0).run(30)
     outcomes = [e["outcome"] for e in results["events"] if e["type"] == "interaction"]
     assert outcomes == ["success"] * 5  # never bought from an empty shop
+
+
+def test_filtered_random_selector_is_uniform_over_matches():
+    spec = {
+        "environment": NONE_ENV,
+        "agent_types": {
+            "buyer": {"initial_count": 1, "initial_state": {},
+                      "behavior": {"rules": [
+                          {"target": {"random": {"type": "shop",
+                                                 "where": {"==": ["&open", 1]}}},
+                           "do": [{"type": "interact", "interaction_type": "visit",
+                                   "params": {"target_delta": {"visits": 1}}}]}]}},
+            # 3 of 60 shops are open: rare matches exercise the fallback too
+            "shop": {"initial_count": 60, "initial_state": {"open": 0, "visits": 0}},
+        },
+    }
+    sim = _sim(spec, seed=9)
+    shops = sim.agent_manager.get_agents_by_type("shop")
+    for shop in shops[:3]:
+        shop.state["open"] = 1
+    sim.run(3000)
+    visits = [s["visits"] for s in shops]
+    assert sum(visits) == 3000 and sum(visits[3:]) == 0
+    assert all(850 < v < 1150 for v in visits[:3])  # ~1000 each

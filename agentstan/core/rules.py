@@ -157,6 +157,7 @@ _OP_SHAPES = {
 _KNOWN_OPS = set(_OP_SHAPES)
 
 _SELECTORS = ("nearest", "random", "lowest", "highest")
+_REJECTION_TRIES = 32
 
 # Fields whose value is a {attribute: expression} map rather than an
 # expression, so an attribute named like an operator ("max") is not
@@ -666,7 +667,40 @@ def _compile_selector(selector):
     matches_of = _compile_query(query)
 
     if kind == "random":
+        if "where" not in query:
+            def select(ctx):
+                matches = matches_of(ctx)
+                return ctx.rng.choice(matches) if matches else None
+            return select
+        # Filtered random pick by rejection sampling: draw candidates and take
+        # the first that passes. Uniform over the matches, like filtering
+        # everything first, but a partner search no longer costs a full pass
+        # over the population for every agent (O(n^2) per step). Falls back
+        # to the full filter when matches are rare.
+        wanted = query.get("type")
+        test = compile_expr(query["where"])
+
         def select(ctx):
+            if not ctx.can_sense:
+                return None
+            if ctx.manager is not None and ctx.env.env_type == "none":
+                pool = (ctx.manager.agents_by_type.get(wanted, ()) if wanted is not None
+                        else ctx.manager.agents)
+            else:
+                pool = ctx.nearby
+            if not pool:
+                return None
+            me, saved = ctx.agent, ctx.other
+            try:
+                for _ in range(_REJECTION_TRIES):
+                    a = pool[int(ctx.rng.random() * len(pool))]
+                    if not a.alive or a is me or (wanted is not None and a.type != wanted):
+                        continue
+                    ctx.other = a
+                    if test(ctx):
+                        return a
+            finally:
+                ctx.other = saved
             matches = matches_of(ctx)
             return ctx.rng.choice(matches) if matches else None
         return select

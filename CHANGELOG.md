@@ -77,4 +77,6 @@ changes alter results for existing specs — see **Behavior changes**.
 - Expressions compile to closures once; rules compute neighbors lazily;
   non-spatial worlds look up agents by type. A 2,000-agent grid model runs
   at ~48 ms/step (was ~180), a 2,000-agent market at ~13 ms/step (was
-  ~340).
+  ~340). A filtered `random` selector (`{"random": {"type": .., "where":
+  ..}}`, the usual partner search) samples instead of scanning everyone:
+  a generated 800-player economy went from ~1,000 to ~13 ms/step.
