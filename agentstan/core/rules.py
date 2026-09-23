@@ -302,9 +302,19 @@ def validate_initial_state(state: Any, where: str, *,
                            _Scope(globals_, None, has_self=False, can_sense=False))
 
 
-def evaluate_initial_state(state: Dict[str, Any], ctx: "_Context") -> Dict[str, Any]:
-    return {attr: evaluate(value, ctx) if is_expression(value) else value
-            for attr, value in state.items()}
+def compile_initial_state(state: Dict[str, Any]):
+    """fn(ctx) -> a fresh state dict with expressions evaluated. Literal
+    values are deep-copied per call so agents never share them."""
+    import copy
+    exprs = {attr: compile_expr(value) for attr, value in state.items()
+             if is_expression(value)}
+
+    def build(ctx):
+        out = {}
+        for attr, value in state.items():
+            out[attr] = exprs[attr](ctx) if attr in exprs else copy.deepcopy(value)
+        return out
+    return build
 
 
 def validate_expression(expr: Any, where: str, *,
@@ -584,60 +594,60 @@ def _candidates(wanted: Optional[str], ctx: _Context) -> List:
         # instead of materializing the whole population per decision.
         pool = (ctx.manager.agents_by_type.get(wanted, ()) if wanted is not None
                 else ctx.manager.agents)
-        return [a for a in pool if a.alive and a is not ctx.agent]
+        me = ctx.agent
+        return [a for a in pool if a.alive and a is not me]
     return [a for a in ctx.nearby
             if a.alive and (wanted is None or a.type == wanted)]
 
 
-def _filter(agents: List, where: Any, ctx: _Context) -> List:
-    if where is None:
-        return agents
-    saved = ctx.other
-    out = []
-    try:
-        for a in agents:
-            ctx.other = a
-            if evaluate(where, ctx):
-                out.append(a)
-    finally:
-        ctx.other = saved
-    return out
-
-
-def _query(query: Dict, ctx: _Context) -> List:
-    """Nearby living agents matching query."""
-    if not isinstance(query, dict):
-        raise RuleError(f"query must be a dict, got {query!r}")
-    return _filter(_candidates(query.get("type"), ctx), query.get("where"), ctx)
-
-
-def _global_query(query: Dict, ctx: _Context) -> List:
-    """All living agents in the world matching query."""
+def _global_pool(wanted: Optional[str], ctx: _Context) -> List:
     if ctx.manager is None:
         raise RuleError("global queries need a running simulation")
-    wanted = query.get("type")
     pool = (ctx.manager.agents_by_type.get(wanted, ()) if wanted is not None
             else ctx.manager.agents)
-    return _filter([a for a in pool if a.alive], query.get("where"), ctx)
+    return [a for a in pool if a.alive]
 
 
-def _rank(matches: List, by: Any, ctx: _Context) -> List:
-    """(value, agent) pairs for agents where ``by`` evaluates to a value."""
-    saved = ctx.other
-    out = []
-    try:
-        for a in matches:
-            ctx.other = a
-            value = evaluate(by, ctx)
-            if value is not None:
-                out.append((value, a))
-    finally:
-        ctx.other = saved
-    return out
+# Expressions are compiled once into closures ``fn(ctx) -> value``; the
+# JSON tree is walked at load time, not on every evaluation. Evaluation
+# order (and so RNG call order) matches the tree left to right.
+
+def _const(value):
+    return lambda ctx: value
 
 
-def _select(selector: Any, ctx: _Context):
-    """Resolve a selector to one agent, or None."""
+def _compile_filter(where):
+    """fn(agents, ctx) -> agents for which ``where`` holds ("&" = candidate)."""
+    if where is None:
+        return lambda agents, ctx: agents
+    test = compile_expr(where)
+
+    def apply(agents, ctx):
+        saved = ctx.other
+        out = []
+        try:
+            for a in agents:
+                ctx.other = a
+                if test(ctx):
+                    out.append(a)
+        finally:
+            ctx.other = saved
+        return out
+    return apply
+
+
+def _compile_query(query, global_=False):
+    """fn(ctx) -> matching agents (nearby, or world-wide if global_)."""
+    if not isinstance(query, dict):
+        raise RuleError(f"query must be a dict, got {query!r}")
+    wanted = query.get("type")
+    keep = _compile_filter(query.get("where"))
+    pool = _global_pool if global_ else _candidates
+    return lambda ctx: keep(pool(wanted, ctx), ctx)
+
+
+def _compile_selector(selector):
+    """fn(ctx) -> one agent or None."""
     if not isinstance(selector, dict) or len(selector) != 1:
         raise RuleError(
             f"selector must be {{'nearest'|'random'|'lowest'|'highest': query}}, "
@@ -647,111 +657,166 @@ def _select(selector: Any, ctx: _Context):
     if kind not in _SELECTORS:
         raise RuleError(f"unknown selector '{kind}' — options: {list(_SELECTORS)}")
     query = selector[kind]
-    matches = _filter(_candidates(query.get("type"), ctx), query.get("where"), ctx)
-    if not matches:
-        return None
+    matches_of = _compile_query(query)
+
     if kind == "random":
-        return ctx.rng.choice(matches)
+        def select(ctx):
+            matches = matches_of(ctx)
+            return ctx.rng.choice(matches) if matches else None
+        return select
+
     if kind == "nearest":
-        my_pos = ctx.agent.state.get("position")
-        if my_pos is None:
-            # No geometry: every match is equally near.
-            return ctx.rng.choice(matches)
-        return min(
-            matches,
-            key=lambda a: ctx.env.distance(my_pos, a.state.get("position"))
-            if a.state.get("position") is not None else _INF,
-        )
-    ranked = _rank(matches, query["by"], ctx)
-    if not ranked:
-        return None
+        def select(ctx):
+            matches = matches_of(ctx)
+            if not matches:
+                return None
+            my_pos = ctx.agent.state.get("position")
+            if my_pos is None:
+                # No geometry: every match is equally near.
+                return ctx.rng.choice(matches)
+            dist = ctx.env.distance
+            return min(matches, key=lambda a: dist(my_pos, a.state["position"])
+                       if a.state.get("position") is not None else _INF)
+        return select
+
+    by = compile_expr(query["by"])
     pick = min if kind == "lowest" else max
-    return pick(ranked, key=lambda pair: pair[0])[1]
+
+    def select(ctx):
+        matches = matches_of(ctx)
+        if not matches:
+            return None
+        saved = ctx.other
+        ranked = []
+        try:
+            for a in matches:
+                ctx.other = a
+                value = by(ctx)
+                if value is not None:
+                    ranked.append((value, a))
+        finally:
+            ctx.other = saved
+        return pick(ranked, key=lambda pair: pair[0])[1] if ranked else None
+    return select
 
 
-def _read_other(name: str, ctx: _Context):
-    if ctx.other is None:
-        raise RuleError(f"'&{name}' used with no selected agent")
-    return ctx.other.state.get(name)
+def _compile_all(args):
+    return [compile_expr(a) for a in args]
 
 
-def evaluate(expr: Any, ctx: _Context) -> Any:
-    """Evaluate an expression tree against a context."""
+def _pair(args):
+    a, b = _compile_all(args)
+    return a, b
+
+
+def compile_expr(expr: Any):
+    """Compile an expression tree into ``fn(ctx) -> value``."""
     if isinstance(expr, (int, float, bool)) or expr is None:
-        return expr
+        return _const(expr)
 
     if isinstance(expr, str):
         if expr.startswith("$"):
-            if ctx.agent is None:
-                raise RuleError(f"'{expr}' used where there is no agent")
-            return ctx.agent.state.get(expr[1:])
-        if expr.startswith("&"):
-            return _read_other(expr[1:], ctx)
-        if expr.startswith("@"):
-            if expr == "@step":
-                return ctx.step
             name = expr[1:]
-            if name not in ctx.globals:
-                raise RuleError(f"unknown global '{expr}'")
-            return ctx.globals[name]
-        return expr
+
+            def read_self(ctx):
+                if ctx.agent is None:
+                    raise RuleError(f"'{expr}' used where there is no agent")
+                return ctx.agent.state.get(name)
+            return read_self
+        if expr.startswith("&"):
+            name = expr[1:]
+
+            def read_other(ctx):
+                if ctx.other is None:
+                    raise RuleError(f"'&{name}' used with no selected agent")
+                return ctx.other.state.get(name)
+            return read_other
+        if expr == "@step":
+            return lambda ctx: ctx.step
+        if expr.startswith("@"):
+            name = expr[1:]
+
+            def read_global(ctx):
+                try:
+                    return ctx.globals[name]
+                except KeyError:
+                    raise RuleError(f"unknown global '{expr}'") from None
+            return read_global
+        return _const(expr)
 
     if isinstance(expr, list):
-        return [evaluate(e, ctx) for e in expr]
+        parts = _compile_all(expr)
+        return lambda ctx: [p(ctx) for p in parts]
 
-    if isinstance(expr, dict):
-        if len(expr) != 1:
-            raise RuleError(
-                f"operator dicts must have exactly one key, got {sorted(expr)}"
-            )
-        op = next(iter(expr))
-        args = expr[op]
+    if not isinstance(expr, dict):
+        raise RuleError(f"cannot evaluate expression: {expr!r}")
+    if len(expr) != 1:
+        raise RuleError(f"operator dicts must have exactly one key, got {sorted(expr)}")
+    op = next(iter(expr))
+    args = expr[op]
 
-        if op in _BINARY_OPS:
-            a, b = (evaluate(x, ctx) for x in args)
-            return _BINARY_OPS[op](a, b)
-        if op == "+":
-            return sum(evaluate(x, ctx) for x in args)
-        if op == "-":
-            a, b = (evaluate(x, ctx) for x in args)
-            return a - b
-        if op == "*":
+    if op in _BINARY_OPS:
+        a, b = _pair(args)
+        cmp = _BINARY_OPS[op]
+        return lambda ctx: cmp(a(ctx), b(ctx))
+    if op == "+":
+        parts = _compile_all(args)
+        return lambda ctx: sum(p(ctx) for p in parts)
+    if op == "-":
+        a, b = _pair(args)
+        return lambda ctx: a(ctx) - b(ctx)
+    if op == "*":
+        parts = _compile_all(args)
+
+        def mul(ctx):
             out = 1
-            for x in args:
-                out *= evaluate(x, ctx)
+            for p in parts:
+                out *= p(ctx)
             return out
-        if op == "/":
-            a, b = (evaluate(x, ctx) for x in args)
-            return a / b
-        if op == "%":
-            a, b = (evaluate(x, ctx) for x in args)
-            return a % b
-        if op == "and":
-            return all(evaluate(x, ctx) for x in args)
-        if op == "or":
-            return any(evaluate(x, ctx) for x in args)
-        if op == "not":
-            return not evaluate(args, ctx)
-        if op == "min":
-            return min(evaluate(x, ctx) for x in args)
-        if op == "max":
-            return max(evaluate(x, ctx) for x in args)
-        if op == "abs":
-            return abs(evaluate(args, ctx))
-        if op == "random":
-            return ctx.rng.random()
-        if op == "uniform":
-            a, b = (evaluate(x, ctx) for x in args)
-            return ctx.rng.uniform(a, b)
-        if op == "randint":
-            a, b = (evaluate(x, ctx) for x in args)
-            return ctx.rng.randint(a, b)
-        if op == "choice":
-            return ctx.rng.choice(args)
-        if op == "count":
-            return len(_query(args, ctx))
-        if op == "nearest_distance":
-            target = _select({"nearest": args}, ctx)
+        return mul
+    if op == "/":
+        a, b = _pair(args)
+        return lambda ctx: a(ctx) / b(ctx)
+    if op == "%":
+        a, b = _pair(args)
+        return lambda ctx: a(ctx) % b(ctx)
+    if op == "and":
+        parts = _compile_all(args)
+        return lambda ctx: all(p(ctx) for p in parts)
+    if op == "or":
+        parts = _compile_all(args)
+        return lambda ctx: any(p(ctx) for p in parts)
+    if op == "not":
+        x = compile_expr(args)
+        return lambda ctx: not x(ctx)
+    if op == "min":
+        parts = _compile_all(args)
+        return lambda ctx: min(p(ctx) for p in parts)
+    if op == "max":
+        parts = _compile_all(args)
+        return lambda ctx: max(p(ctx) for p in parts)
+    if op == "abs":
+        x = compile_expr(args)
+        return lambda ctx: abs(x(ctx))
+    if op == "random":
+        return lambda ctx: ctx.rng.random()
+    if op == "uniform":
+        a, b = _pair(args)
+        return lambda ctx: ctx.rng.uniform(a(ctx), b(ctx))
+    if op == "randint":
+        a, b = _pair(args)
+        return lambda ctx: ctx.rng.randint(a(ctx), b(ctx))
+    if op == "choice":
+        options = list(args)
+        return lambda ctx: ctx.rng.choice(options)
+    if op == "count":
+        matches = _compile_query(args)
+        return lambda ctx: len(matches(ctx))
+    if op == "nearest_distance":
+        nearest = _compile_selector({"nearest": args})
+
+        def distance(ctx):
+            target = nearest(ctx)
             if target is None:
                 return _INF
             my_pos = ctx.agent.state.get("position")
@@ -759,43 +824,61 @@ def evaluate(expr: Any, ctx: _Context) -> Any:
             if my_pos is None or other_pos is None:
                 return _INF
             return ctx.env.distance(my_pos, other_pos)
-        if op == "total":
-            if isinstance(args, str):
+        return distance
+    if op == "total":
+        if isinstance(args, str):
+            def total(ctx):
                 if ctx.manager is not None:
                     return len(ctx.manager.get_agents_by_type(args))
                 return (ctx.counts or {}).get(args, 0)
-            return len(_global_query(args, ctx))
-        if op in ("sum", "mean"):
-            attr = args["attr"]
-            values = [a.state.get(attr) for a in _global_query(args, ctx)]
-            values = [v for v in values if v is not None]
+            return total
+        matches = _compile_query(args, global_=True)
+        return lambda ctx: len(matches(ctx))
+    if op in ("sum", "mean"):
+        attr = args["attr"]
+        matches = _compile_query({k: v for k, v in args.items() if k != "attr"},
+                                 global_=True)
+
+        def aggregate(ctx):
+            values = [v for v in (a.state.get(attr) for a in matches(ctx))
+                      if v is not None]
             if op == "sum":
                 return sum(values)
             return sum(values) / len(values) if values else 0
-        raise RuleError(f"unknown operator '{op}'")
+        return aggregate
+    raise RuleError(f"unknown operator '{op}'")
 
-    raise RuleError(f"cannot evaluate expression: {expr!r}")
+
+def evaluate(expr: Any, ctx: _Context) -> Any:
+    """Evaluate an expression tree against a context (compiles it first;
+    hot paths compile once and reuse the closure)."""
+    return compile_expr(expr)(ctx)
 
 
-def _evaluate_value(key: str, value: Any, ctx: _Context) -> Any:
-    """Evaluate an action field, recursing into nested maps and lists."""
+def _compile_value(key: str, value: Any):
+    """Compile an action field; nested maps and lists rebuild on every
+    call, so no two agents ever share a mutable value."""
     if key in _MAPPING_FIELDS and isinstance(value, dict):
-        return {k: _evaluate_value("", v, ctx) for k, v in value.items()}
+        items = [(k, _compile_value("", v)) for k, v in value.items()]
+        return lambda ctx: {k: f(ctx) for k, f in items}
     if isinstance(value, dict):
         if len(value) == 1 and next(iter(value)) in _KNOWN_OPS:
-            return evaluate(value, ctx)
-        return {k: _evaluate_value(k, v, ctx) for k, v in value.items()}
+            return compile_expr(value)
+        items = [(k, _compile_value(k, v)) for k, v in value.items()]
+        return lambda ctx: {k: f(ctx) for k, f in items}
     if isinstance(value, list):
-        return [_evaluate_value("", v, ctx) for v in value]
+        parts = [_compile_value("", v) for v in value]
+        return lambda ctx: [p(ctx) for p in parts]
     if isinstance(value, str) and value[:1] in ("$", "&", "@"):
-        return evaluate(value, ctx)
-    return value
+        return compile_expr(value)
+    return _const(value)
 
 
-def _evaluate_fields(action: Dict, ctx: _Context) -> Dict:
-    """Evaluate every expression-valued field of an action dict."""
-    return {key: (value if key == "type" else _evaluate_value(key, value, ctx))
-            for key, value in action.items()}
+def _compile_fields(action: Dict, skip=()):
+    """fn(ctx) -> dict with every field evaluated ("type" kept verbatim)."""
+    fields = [(k, _const(v) if k == "type" else _compile_value(k, v))
+              for k, v in action.items() if k not in skip]
+    return lambda ctx: {k: f(ctx) for k, f in fields}
 
 
 def _sign_away(mine: float, other: float, rng) -> int:
@@ -807,58 +890,71 @@ def _sign_away(mine: float, other: float, rng) -> int:
     return rng.choice([-1, 1])
 
 
-def _resolve_target(action: Dict, field: str, ctx: _Context):
-    """The agent an action is aimed at: its own selector, or the rule's."""
+def _compile_target(action: Dict, field: str):
+    """fn(ctx) -> the agent an action is aimed at: its own selector, or
+    the rule's bound target."""
     spec = action.get(field)
     if isinstance(spec, dict):
-        return _select(spec, ctx)
-    return ctx.other
+        return _compile_selector(spec)
+    return lambda ctx: ctx.other
 
 
-def _compile_action(action: Dict, ctx: _Context) -> Optional[Dict]:
-    """Turn one action template into a concrete engine action (or None)."""
+def _compile_action(action: Dict):
+    """Compile an action template into ``fn(ctx) -> engine action or None``."""
     a_type = action["type"]
 
     if a_type == "move_toward":
         target = action.get("target")
         if isinstance(target, dict) or target is None:
-            other = _resolve_target(action, "target", ctx)
-            if other is None:
-                return None
-            target = other.state.get("position")
-        else:
-            target = _evaluate_value("target", target, ctx)
-        if target is None:
-            return None
-        return {"type": "move_to", "target": tuple(target)}
+            other_of = _compile_target(action, "target")
+
+            def move_toward(ctx):
+                other = other_of(ctx)
+                pos = other.state.get("position") if other is not None else None
+                return {"type": "move_to", "target": tuple(pos)} if pos is not None else None
+            return move_toward
+        position = _compile_value("target", target)
+
+        def move_to_position(ctx):
+            pos = position(ctx)
+            return {"type": "move_to", "target": tuple(pos)} if pos is not None else None
+        return move_to_position
 
     if a_type == "move_away":
-        other = _resolve_target(action, "from", ctx)
-        if other is None:
-            return None
-        my_pos = ctx.agent.state.get("position")
-        other_pos = other.state.get("position")
-        if my_pos is None or other_pos is None:
-            return None
-        dx = _sign_away(my_pos[0], other_pos[0], ctx.rng)
-        dy = _sign_away(my_pos[1], other_pos[1], ctx.rng)
-        return {"type": "move", "direction": [dx, dy]}
+        other_of = _compile_target(action, "from")
+
+        def move_away(ctx):
+            other = other_of(ctx)
+            if other is None:
+                return None
+            my_pos = ctx.agent.state.get("position")
+            other_pos = other.state.get("position")
+            if my_pos is None or other_pos is None:
+                return None
+            dx = _sign_away(my_pos[0], other_pos[0], ctx.rng)
+            dy = _sign_away(my_pos[1], other_pos[1], ctx.rng)
+            return {"type": "move", "direction": [dx, dy]}
+        return move_away
 
     if a_type == "interact" and "target_id" not in action:
-        other = _resolve_target(action, "target", ctx)
-        if other is None:
-            return None
-        out = {k: v for k, v in action.items() if k != "target"}
-        saved = ctx.other
-        ctx.other = other  # &attr in params reads the interaction partner
-        try:
-            compiled = _evaluate_fields(out, ctx)
-        finally:
-            ctx.other = saved
-        compiled["target_id"] = other.id
-        return compiled
+        other_of = _compile_target(action, "target")
+        fields = _compile_fields(action, skip=("target",))
 
-    return _evaluate_fields(action, ctx)
+        def interact(ctx):
+            other = other_of(ctx)
+            if other is None:
+                return None
+            saved = ctx.other
+            ctx.other = other  # &attr in params reads the interaction partner
+            try:
+                compiled = fields(ctx)
+            finally:
+                ctx.other = saved
+            compiled["target_id"] = other.id
+            return compiled
+        return interact
+
+    return _compile_fields(action)
 
 
 def _located(err: Exception, where: str, ctx: _Context) -> RuleError:
@@ -872,18 +968,19 @@ def _located(err: Exception, where: str, ctx: _Context) -> RuleError:
     return RuleError(f"{where}: {msg}{hint} [{who}, step {ctx.step}]")
 
 
-def _choose(branches: List[Dict], ctx: _Context) -> List[Dict]:
-    """Pick one branch's actions with probability proportional to weight."""
-    weights = [max(0.0, float(evaluate(b["weight"], ctx) or 0)) for b in branches]
+def _choose(branches: List, ctx: _Context) -> List:
+    """Pick one compiled branch's actions with probability proportional to
+    weight. branches: [(weight_fn, action_fns), ...]."""
+    weights = [max(0.0, float(weight(ctx) or 0)) for weight, _ in branches]
     total = sum(weights)
     if total <= 0:
         return []
     roll = ctx.rng.random() * total
-    for branch, weight in zip(branches, weights):
+    for (_, actions), weight in zip(branches, weights):
         roll -= weight
         if roll < 0:
-            return branch["do"]
-    return branches[-1]["do"]
+            return actions
+    return branches[-1][1]
 
 
 def _collapse_repeated_target(rule: Dict) -> Dict:
@@ -933,10 +1030,26 @@ class RuleBehavior:
             world=world,
         )
         self.rules = [_collapse_repeated_target(rule) for rule in rules]
+        self._compiled = [self._compile_rule(rule) for rule in self.rules]
         self.simulation = simulation
         self.agent_type = agent_type
         self.world = world
         self.can_sense = can_sense and not world
+
+    @staticmethod
+    def _compile_rule(rule: Dict):
+        """(target_fn, when_fn, prob_fn, actions) with actions either a list
+        of action fns or ("choose", [(weight_fn, action fns), ...])."""
+        target = _compile_selector(rule["target"]) if "target" in rule else None
+        when = compile_expr(rule["when"]) if "when" in rule else None
+        prob = compile_expr(rule["prob"]) if "prob" in rule else None
+        if "do" in rule:
+            actions = [_compile_action(a) for a in rule["do"]]
+        else:
+            actions = ("choose", [(compile_expr(b["weight"]),
+                                   [_compile_action(a) for a in b["do"]])
+                                  for b in rule["choose"]])
+        return target, when, prob, actions
 
     def _context(self, agent, nearby, step, counts=None) -> _Context:
         sim = self.simulation
@@ -960,22 +1073,22 @@ class RuleBehavior:
 
     def _run(self, ctx: _Context) -> List[Dict]:
         actions = []
-        for i, rule in enumerate(self.rules):
+        for i, (target, when, prob, rule_actions) in enumerate(self._compiled):
             try:
                 ctx.other = None
-                if "target" in rule:
-                    ctx.other = _select(rule["target"], ctx)
+                if target is not None:
+                    ctx.other = target(ctx)
                     if ctx.other is None:
                         continue
-                when = rule.get("when")
-                if when is not None and not evaluate(when, ctx):
+                if when is not None and not when(ctx):
                     continue
-                prob = rule.get("prob")
-                if prob is not None and ctx.rng.random() >= evaluate(prob, ctx):
+                # draw first, then evaluate prob (keeps RNG order stable)
+                if prob is not None and ctx.rng.random() >= prob(ctx):
                     continue
-                chosen = rule["do"] if "do" in rule else _choose(rule["choose"], ctx)
-                for action in chosen:
-                    compiled = _compile_action(action, ctx)
+                if isinstance(rule_actions, tuple):
+                    rule_actions = _choose(rule_actions[1], ctx)
+                for make in rule_actions:
+                    compiled = make(ctx)
                     if compiled is not None:
                         actions.append(compiled)
             except RuleError as e:
