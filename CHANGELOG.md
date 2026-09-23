@@ -17,6 +17,9 @@ changes alter results for existing specs — see **Behavior changes**.
   `total` accepts a filtered query.
 - `exchange`: an atomic two-sided trade. `spawn`: create agents from a
   type's `initial_state` (inflows).
+- `choose`: a rule runs exactly one weighted branch.
+- `initial_state` values may be expressions, evaluated per agent at
+  creation (`choice`, `uniform`, `randint`, `@globals`).
 - `Simulation(spec, behaviors={type: fn})`: Python behavior functions,
   seeded through `sim_state["rng"]`.
 - `Simulation.check(spec)`: construct and smoke-run a spec. Used by
@@ -54,6 +57,14 @@ changes alter results for existing specs — see **Behavior changes**.
   seeded batch was one run repeated). Runs execute in worker processes.
 - CLI: the old `agentstan "prompt"` / `--from-spec` form is replaced by
   subcommands.
+- Default `log_level` ("normal") no longer records every agent action and
+  state change; use `"detailed"` for those. `"minimal"` now also drops
+  interactions.
+- Unknown top-level spec keys and agent-type keys are errors.
+- An action that repeats its rule's `target` selector acts on the bound
+  target instead of selecting again.
+- `ai.generate` passes the LLM's spec through without inventing defaults
+  (a missing environment is an error to repair, not a grid).
 
 ### Deprecated
 - `behavior_code` (Python source strings run with `exec`). Use rules, or
@@ -63,5 +74,7 @@ changes alter results for existing specs — see **Behavior changes**.
 - `agentstan.defi` (the separate DeFi lending engine).
 
 ### Performance
-- Rules compute neighbors lazily, and non-spatial worlds look up agents by
-  type: about 3x faster on grids and about 20x on large non-spatial models.
+- Expressions compile to closures once; rules compute neighbors lazily;
+  non-spatial worlds look up agents by type. A 2,000-agent grid model runs
+  at ~48 ms/step (was ~180), a 2,000-agent market at ~13 ms/step (was
+  ~340).

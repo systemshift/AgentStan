@@ -57,10 +57,17 @@ condition holds fires, in order:
 - "prob" is optional — the rule fires with that probability.
 - "target" is optional — select ONE other agent first; if none matches, the
   rule does not fire. Inside the rule "&attr" reads the target's attributes
-  and interact/move_toward/move_away act on it.
-- "do" is a list of actions (below).
+  and interact/move_toward/move_away act on it. Do NOT repeat the selector
+  in the action — just omit the action's "target".
+- "do" is a list of actions (below). Instead of "do", a rule may have
+  "choose": exactly ONE weighted branch runs, e.g. a loot roll:
+      {"choose": [{"weight": 90, "do": [...common...]},
+                  {"weight": 9,  "do": [...rare...]},
+                  {"weight": 1,  "do": [...legendary...]}]}
 - All of an agent's rules are evaluated first, then the actions apply. A rule
   reading "$energy" sees the value from before this step's changes.
+- Steps are numbered from 1. There is no step 0; put starting values in
+  initial_state or globals, not in a rule for the first step.
 
 ### Expressions (used in "when", "prob" and ANY action field, at any depth)
 
@@ -122,6 +129,19 @@ reproduce: the parent pays cost.amount per offspring, and each offspring
 starts with that amount. spawn creates agents for free from the type's
 initial_state — use it for inflows (new players joining, arrivals).
 
+### Initial state can vary per agent
+
+initial_state values may be expressions, evaluated separately for each agent
+when it is created (randomness and "@globals" only — no "$", no neighbors):
+
+    "initial_state": {"guild": {"choice": ["red", "blue", "green"]},
+                      "skill": {"uniform": [0.2, 1.0]},
+                      "gold": {"randint": [50, 150]}}
+
+Use this for groups, tiers and heterogeneity. Do NOT make one agent type per
+group ("guild_red", "guild_blue"): use one type with a "guild" attribute and
+filter with "where": {"==": ["&guild", "$guild"]}.
+
 ### World state (top-level keys)
 
 - "globals": {"price": 10, "treasury": 0} — shared numbers, read as "@price"
@@ -134,6 +154,23 @@ initial_state — use it for inflows (new players joining, arrivals).
   expressions recorded every step. Always add observables for the quantities
   the user cares about (money supply, prices, inequality, stock).
 
+## Modeling economies — do / don't
+
+- Sinks and faucets are globals, not agents. Burn gold with modify_state on
+  the player plus modify_global on a "gold_burned" counter; never create
+  "upgrade_sink" or "repair_sink" agent types.
+- Track money created and destroyed as globals ("gold_minted",
+  "gold_burned") and expose them, plus total supply, as observables.
+- Trades are exchanges. Amounts can be expressions or quantities:
+  {"exchange": {"give": {"gold": {"*": [3, "&price"]}}, "get": {"ore": 3}}}.
+- Put the knob the user asks about in "globals" (e.g. "quest_reward",
+  "tax_rate") and read it as "@quest_reward", so it can be changed and
+  compared. For a what-if question, model the change as a global and say
+  in "description" which value is the baseline.
+- Keep populations modest (up to ~1,000 agents) and represent inventories,
+  resources and items as attributes, never as one agent per item or per
+  patch of grass.
+
 ## Example: Game Economy (non-spatial)
 
 ```json
@@ -142,7 +179,7 @@ initial_state — use it for inflows (new players joining, arrivals).
   "description": "Players earn gold on quests and buy potions from the cheapest shop in stock; shops restock and raise prices when stock runs low, cut them when it piles up. Repair fees are a gold sink, new players keep joining.",
   "seed": 42,
   "environment": {"type": "none"},
-  "globals": {"gold_burned": 0},
+  "globals": {"gold_burned": 0, "quest_reward_max": 8},
   "world_rules": [
     {"when": {"==": [{"%": ["@step", 5]}, 0]},
      "do": [{"type": "spawn", "agent_type": "player", "count": 2}]}
@@ -151,14 +188,15 @@ initial_state — use it for inflows (new players joining, arrivals).
     "gold_supply": {"sum": {"type": "player", "attr": "gold"}},
     "potion_price": {"mean": {"type": "shop", "attr": "price"}},
     "gold_burned": "@gold_burned",
+    "avg_skill": {"mean": {"type": "player", "attr": "skill"}},
     "broke_players": {"total": {"type": "player", "where": {"<": ["&gold", 5]}}}
   },
   "agent_types": {
     "player": {
       "initial_count": 50,
-      "initial_state": {"gold": 20, "potions": 0},
+      "initial_state": {"gold": {"randint": [10, 30]}, "potions": 0, "skill": {"uniform": [0.3, 1.0]}},
       "behavior": {"rules": [
-        {"prob": 0.6, "do": [{"type": "modify_state", "attribute": "gold", "delta": {"randint": [3, 8]}}]},
+        {"prob": "$skill", "do": [{"type": "modify_state", "attribute": "gold", "delta": {"randint": [3, "@quest_reward_max"]}}]},
         {"target": {"lowest": {"type": "shop", "by": "&price", "where": {">": ["&stock", 0]}}},
          "when": {"and": [{"<": ["$potions", 3]}, {">=": ["$gold", "&price"]}]},
          "do": [{"type": "interact", "interaction_type": "buy_potion",

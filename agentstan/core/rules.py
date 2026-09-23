@@ -36,7 +36,13 @@ Top-level spec keys that use the same language:
 Semantics
 ---------
 Every rule whose ``when`` is true (and whose ``prob`` passes) fires, in
-order. A rule with no ``when`` always fires.
+order. A rule with no ``when`` always fires. Instead of ``do``, a rule may
+have ``choose``: a list of ``{"weight": expr, "do": [...]}`` branches, of
+which exactly one runs (probability proportional to weight).
+
+Steps are numbered from 1. ``initial_state`` values may be expressions,
+evaluated per agent at creation (randomness and globals; no agent yet):
+``{"guild": {"choice": ["red", "blue"]}, "skill": {"uniform": [0, 1]}}``.
 
 An agent's rules are all evaluated first, against the world as it is at
 that moment, and the resulting actions are then applied in order. So a

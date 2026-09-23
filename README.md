@@ -118,11 +118,18 @@ ever created by a failed trade:
 - `sum` / `mean` / `total`: world-wide aggregates, with optional `where`
 - selectors `nearest`, `random`, `lowest`, `highest` (the last two with `by`)
 - `spawn`: create agents from a type's `initial_state`
+- `choose`: a rule runs exactly one weighted branch (loot tables, gacha)
+- `initial_state` values may be expressions evaluated per agent, e.g.
+  `"guild": {"choice": ["red", "blue"]}`, `"skill": {"uniform": [0, 1]}`
 
 Specs are validated strictly: unknown actions, fields, interaction params,
 agent types or globals are rejected with the path of the offending rule,
 and a rule that fails while running raises instead of going quiet.
 `Simulation.check(spec)` constructs a spec and smoke-runs a few steps.
+
+The event log (`results["events"]`) records births, deaths, interactions
+and global changes by default; `"log_level": "detailed"` adds every move
+and state change, `"minimal"` keeps only births and deaths.
 
 ### Packs — save, share, export your work
 
