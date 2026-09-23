@@ -109,7 +109,6 @@ Actions (any field may be an expression, at any depth)
     {"type": "custom", "details": {...}}
 """
 
-import math
 from typing import Any, Dict, List, Optional
 
 _INF = float("inf")
@@ -897,3 +896,119 @@ class RuleBehavior:
                 raise _located(e, f"{self.path}[{i}]", ctx) from e
         ctx.other = None
         return actions
+
+
+# --- Whole-spec checks -----------------------------------------------------
+
+def _dollar_reads(node: Any, out: set) -> None:
+    if isinstance(node, str):
+        if node.startswith("$"):
+            out.add(node[1:])
+    elif isinstance(node, dict):
+        for value in node.values():
+            _dollar_reads(value, out)
+    elif isinstance(node, list):
+        for value in node:
+            _dollar_reads(value, out)
+
+
+def _literal_keys(mapping: Any) -> set:
+    return set(mapping) if isinstance(mapping, dict) else set()
+
+
+def check_attribute_reads(spec: Dict[str, Any]) -> None:
+    """Reject rules that read an attribute their agents can never have.
+
+    A comparison on a missing attribute is simply false, so a typo like
+    "$enrgy", or an attribute only another type defines, would otherwise
+    make a rule silently never fire. An attribute counts as available to a
+    type if it is in the type's initial_state, or any rule could write it
+    onto agents of that type (its own modify_state/self_delta/exchange,
+    another agent's target_delta/exchange/transfer, global_rules, spawn
+    state, or a transform that carries the old agent's state over).
+
+    Specs with Python behaviors are skipped: code can write anything.
+    """
+    types = spec.get("agent_types") or {}
+    rules_of = {}
+    for name, type_spec in types.items():
+        if type_spec.get("behavior_code"):
+            return
+        behavior = type_spec.get("behavior")
+        if isinstance(behavior, dict) and isinstance(behavior.get("rules"), list):
+            rules_of[name] = behavior["rules"]
+
+    provided = {name: set((t.get("initial_state") or {})) | {"position"}
+                for name, t in types.items()}
+    for_everyone = set()
+    carries = []  # (from_type, to_type) via transform
+
+    def scan(actions, owner):
+        """Record what these actions write. owner=None: applies to anyone."""
+        mine = provided[owner] if owner is not None else for_everyone
+        for action in actions:
+            if not isinstance(action, dict):
+                continue
+            a_type = action.get("type")
+            if a_type == "modify_state":
+                attr = action.get("attribute")
+                if isinstance(attr, str):
+                    mine.add(attr)
+            elif a_type == "interact":
+                params = action.get("params") or {}
+                mine.update(_literal_keys(params.get("self_delta")))
+                for_everyone.update(_literal_keys(params.get("target_delta")))
+                exchange = params.get("exchange") or {}
+                for side in ("give", "get"):
+                    keys = _literal_keys(exchange.get(side))
+                    mine.update(keys)
+                    for_everyone.update(keys)
+                transfer = params.get("transfer") or {}
+                if isinstance(transfer.get("attribute"), str):
+                    mine.add(transfer["attribute"])
+                    for_everyone.add(transfer["attribute"])
+                if params.get("energy_gain") is not None:
+                    mine.add("energy")
+            elif a_type == "reproduce":
+                cost = action.get("cost") or {"attribute": "energy"}
+                if isinstance(cost.get("attribute"), str):
+                    mine.add(cost["attribute"])
+                mine.update(_literal_keys(action.get("offspring_state")))
+            elif a_type == "spawn" and action.get("agent_type") in provided:
+                provided[action["agent_type"]].update(_literal_keys(action.get("state")))
+            elif a_type == "transform" and action.get("new_type") in provided:
+                target = action["new_type"]
+                provided[target].update(_literal_keys(action.get("new_state")))
+                if owner is not None:
+                    carries.append((owner, target))
+
+    for name, rules in rules_of.items():
+        for rule in rules:
+            if isinstance(rule, dict):
+                scan(rule.get("do") or [], name)
+    for key in ("global_rules", "world_rules"):
+        for rule in spec.get(key) or []:
+            if isinstance(rule, dict):
+                scan(rule.get("do") or [], None)
+
+    # Transforms carry the old agent's attributes to the new type
+    changed = True
+    while changed:
+        changed = False
+        for source, target in carries:
+            before = len(provided[target])
+            provided[target] |= provided[source]
+            changed |= len(provided[target]) != before
+
+    for name, rules in rules_of.items():
+        reads = set()
+        _dollar_reads(rules, reads)
+        missing = sorted(reads - provided[name] - for_everyone)
+        if missing:
+            listed = ", ".join(f"'${m}'" for m in missing)
+            raise RuleError(
+                f"agent_types['{name}'].behavior.rules read {listed}, but no "
+                f"{name} agent ever has {'that attribute' if len(missing) == 1 else 'those attributes'} "
+                f"— give {'it' if len(missing) == 1 else 'them'} a value in "
+                f"agent_types['{name}'].initial_state"
+            )

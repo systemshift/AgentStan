@@ -112,3 +112,23 @@ def test_transform_with_inline_behavior_code():
     overriders = sim.agent_manager.get_agents_by_type("overrider")
     assert len(overriders) == 1
     assert overriders[0].get_attribute("tag") == "ran"
+
+
+def test_transform_fills_missing_attributes_from_new_type():
+    spec = {
+        "environment": {"type": "none"},
+        "agent_types": {
+            "healthy": {"initial_count": 1, "initial_state": {"gold": 5},
+                        "behavior": {"rules": [
+                            {"do": [{"type": "transform", "new_type": "sick",
+                                     "new_state": {"days": 1}}]}]}},
+            "sick": {"initial_count": 0,
+                     "initial_state": {"days": 0, "recovery_time": 14, "gold": 0}},
+        },
+    }
+    sim = Simulation(spec, seed=0)
+    sim.run(1)
+    sick = sim.agent_manager.get_agents_by_type("sick")[0]
+    assert sick["recovery_time"] == 14   # filled from the new type
+    assert sick["gold"] == 5             # the agent's own state wins
+    assert sick["days"] == 1             # new_state wins over both

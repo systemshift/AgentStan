@@ -6,7 +6,6 @@ stability, oscillations, crashes, growth phases.
 """
 
 from typing import Dict, Any, List, Optional
-import math
 
 
 def analyze(results: Dict[str, Any]) -> Dict[str, Any]:

@@ -289,9 +289,41 @@ def test_world_rules_cannot_touch_agents():
 
 def test_runtime_errors_surface_with_location():
     spec = _one_rule({"do": [{"type": "modify_state", "attribute": "gold",
-                              "value": {"+": ["$missing", 1]}}]})
-    with pytest.raises(RuleError, match=r"rules\[0\].*doesn't have.*step 1"):
+                              "value": {"/": ["$gold", {"-": ["$gold", 1]}]}}]})
+    with pytest.raises(RuleError, match=r"rules\[0\].*division by zero.*agent 1 \(a\), step 1"):
         _sim(spec).run(3)
+
+
+def test_reading_an_attribute_no_agent_has_fails_at_construction():
+    spec = _one_rule({"when": {"<": ["$enrgy", 5]}, "do": []})
+    with pytest.raises(RuleError, match=r"read '\$enrgy'.*initial_state"):
+        _sim(spec)
+
+
+def test_attributes_written_by_rules_or_carried_by_transform_are_known():
+    spec = {
+        "environment": NONE_ENV,
+        "agent_types": {
+            "larva": {
+                "initial_count": 1, "initial_state": {"food": 0},
+                "behavior": {"rules": [
+                    {"do": [{"type": "modify_state", "attribute": "age", "value": 1}]},
+                    {"when": {">": ["$age", 0]},
+                     "do": [{"type": "transform", "new_type": "adult"}]}]},
+            },
+            "adult": {
+                "initial_count": 0, "initial_state": {"wings": 2},
+                "behavior": {"rules": [
+                    # food and age come from the larva it used to be
+                    {"when": {">": ["$age", "$food"]},
+                     "do": [{"type": "modify_state", "attribute": "flights", "delta": "$wings"}]}]},
+            },
+        },
+    }
+    sim = _sim(spec)
+    sim.run(3)
+    adult = sim.agent_manager.get_agents_by_type("adult")[0]
+    assert adult["wings"] == 2 and adult["flights"] == 2
 
 
 # --- Checkpoints ---

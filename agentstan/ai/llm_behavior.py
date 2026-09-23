@@ -62,7 +62,7 @@ def build_agent_prompt(agent, sim_state, agents_nearby, memory: AgentMemory,
             if energy is not None:
                 info += f" (energy: {round(energy, 1)})"
             nearby_lines.append(info)
-        parts.append(f"\nNearby agents:\n" + "\n".join(nearby_lines))
+        parts.append("\nNearby agents:\n" + "\n".join(nearby_lines))
     else:
         parts.append("\nNo agents nearby.")
 

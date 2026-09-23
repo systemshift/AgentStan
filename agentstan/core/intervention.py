@@ -9,7 +9,7 @@ import threading
 import copy
 import logging
 from dataclasses import dataclass, field
-from typing import Dict, Any, List, Optional, Callable, Tuple
+from typing import Dict, Any, List, Callable, Tuple
 
 logger = logging.getLogger("agentstan")
 
@@ -128,21 +128,21 @@ class InterventionEngine:
         p = intervention.params
 
         if intervention.type == "add_agent":
-            from .agent import Agent
-            behavior_func = None
+            if p["agent_type"] in sim.spec["agent_types"]:
+                # A spec type: its initial_state and behavior, plus overrides
+                agent = sim._new_agent(p["agent_type"], p["state"])
+            else:
+                from .agent import Agent
+                agent = Agent(agent_type=p["agent_type"],
+                              initial_state=copy.deepcopy(p["state"]))
+                if agent.state.get("position") is None:
+                    agent.state["position"] = sim.environment.get_random_position()
             if p.get("behavior_code"):
-                behavior_func = sim._compile_behavior_function(
-                    p["agent_type"], p["behavior_code"]
+                agent.behavior_function = sim._compile_behavior_function(
+                    p["agent_type"], p["behavior_code"], rng=sim.rng
                 )
-            agent = Agent(
-                agent_type=p["agent_type"],
-                initial_state=copy.deepcopy(p["state"]),
-                behavior_function=behavior_func,
-            )
             if p.get("position"):
                 agent.state["position"] = p["position"]
-            elif agent.state.get("position") is None:
-                agent.state["position"] = sim.environment.get_random_position()
             sim.agent_manager.add_agent(agent)
 
         elif intervention.type == "remove_agent":

@@ -6,7 +6,6 @@ model-level and agent-level metrics each step.
 """
 
 from typing import Dict, Any, List, Callable, Optional
-from .agent import AgentManager
 
 
 class DataCollector:

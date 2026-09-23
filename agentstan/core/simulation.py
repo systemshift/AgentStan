@@ -4,6 +4,7 @@ Core simulation engine.
 
 import copy
 import time
+import warnings
 import random as _random_module
 import logging
 from typing import Dict, Any, List, Optional, Callable
@@ -13,7 +14,7 @@ from .agent import Agent, AgentManager
 from .actions import ActionProcessor
 from .logger import EventLogger
 from .scheduler import RandomScheduler
-from .rules import RuleBehavior, RuleError, validate_expression
+from .rules import RuleBehavior, RuleError, validate_expression, check_attribute_reads
 
 log = logging.getLogger("agentstan")
 
@@ -28,11 +29,26 @@ class Simulation:
         seed: RNG seed. If set, the run is deterministic: same spec + same
             seed = same results. Each simulation owns its own RNG, so
             concurrent simulations never share random state.
+        behaviors: Python behavior functions by agent type, for local
+            models the rule language can't express. Each is called as
+            ``fn(agent, sim_state, agents_nearby) -> list of actions``;
+            use ``sim_state["rng"]`` for randomness so runs stay
+            reproducible. Overrides the spec's ``behavior`` for that type.
+            Not part of the spec: a model with Python behaviors isn't
+            portable data.
     """
 
     def __init__(self, specification: Dict[str, Any], scheduler=None,
-                 seed: Optional[int] = None):
+                 seed: Optional[int] = None,
+                 behaviors: Optional[Dict[str, Callable]] = None):
         self._validate_spec(specification)
+        self._behaviors = dict(behaviors or {})
+        unknown = set(self._behaviors) - set(specification["agent_types"])
+        if unknown:
+            raise ValueError(
+                f"behaviors given for undefined agent types {sorted(unknown)} — "
+                f"defined: {sorted(specification['agent_types'])}"
+            )
         self.spec = specification
         self.step = 0
         self.seed = seed if seed is not None else specification.get("seed")
@@ -58,12 +74,16 @@ class Simulation:
             rng=self.rng,
             globals=self.globals,
             spawner=self._new_agent,
+            type_defaults=lambda t: copy.deepcopy(
+                self.spec["agent_types"].get(t, {}).get("initial_state", {})),
         )
 
         # Compile every behavior up front so a bad spec fails here, not
         # mid-run (and not only for types that happen to have agents).
         for agent_type in specification["agent_types"]:
             self.get_behavior(agent_type)
+        if not self._behaviors:
+            check_attribute_reads(specification)
 
         # Global rules: declarative rules applied to every living agent each
         # step (after behaviors). Replaces hardcoded world laws — e.g. death
@@ -217,8 +237,9 @@ class Simulation:
         """Resolve a behavior function for an agent type from the spec, cached.
 
         Resolution order:
-          1. ``behavior`` — declarative rules (preferred; pure JSON data)
-          2. ``behavior_code`` — Python source string (legacy escape hatch)
+          1. ``behaviors`` passed to the constructor — Python functions
+          2. ``behavior`` — declarative rules (preferred; pure JSON data)
+          3. ``behavior_code`` — Python source string (deprecated)
         """
         if agent_type in self._behavior_cache:
             return self._behavior_cache[agent_type]
@@ -227,10 +248,19 @@ class Simulation:
         behavior_spec = type_spec.get("behavior")
         behavior_code = type_spec.get("behavior_code", "")
 
-        if isinstance(behavior_spec, dict) and "rules" in behavior_spec:
+        if agent_type in self._behaviors:
+            func = self._behaviors[agent_type]
+        elif isinstance(behavior_spec, dict) and "rules" in behavior_spec:
             func = RuleBehavior(behavior_spec["rules"], self,
                                 agent_type=agent_type)
         elif behavior_code:
+            warnings.warn(
+                f"agent_types['{agent_type}'].behavior_code is deprecated: it "
+                f"runs Python source with exec and isn't portable. Use "
+                f"declarative rules, or pass a function via "
+                f"Simulation(spec, behaviors={{'{agent_type}': fn}}).",
+                DeprecationWarning, stacklevel=3,
+            )
             func = self._compile_behavior_function(
                 agent_type, behavior_code, rng=self.rng
             )
@@ -349,6 +379,7 @@ class Simulation:
             "environment": self.environment.to_dict(),
             "agent_counts": self.agent_manager.get_counts(),
             "globals": self.globals,
+            "rng": self.rng,
         }
         return agent.execute_behavior(sim_state, nearby())
 

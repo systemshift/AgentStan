@@ -7,57 +7,44 @@ Birds follow three simple rules:
 3. Cohesion — steer toward average position of neighbors
 
 These three rules produce realistic emergent flocking behavior.
-Uses continuous-like movement on a grid.
+Uses continuous-like movement on a grid. The behavior is a Python function
+passed via Simulation(spec, behaviors=...) — the escape hatch for logic the
+rule language doesn't express (the spec itself stays pure JSON).
 """
 
 from agentstan import Simulation, DataCollector
 
-behavior_code = """
-def bird_behavior(agent, model, agents_nearby):
-    actions = []
-    position = agent['position']
-
-    if not agents_nearby:
-        # No neighbors: move randomly
-        actions.append({'type': 'move', 'direction': [random.choice([-1,0,1]), random.choice([-1,0,1])]})
-        return actions
-
-    # Compute neighbor statistics
+def bird_behavior(agent, sim_state, agents_nearby):
+    """Python behavior: plain function, randomness from sim_state["rng"]."""
+    rng = sim_state["rng"]
+    wander = {"type": "move", "direction": [rng.choice([-1, 0, 1]), rng.choice([-1, 0, 1])]}
     flock = [a for a in agents_nearby if a.alive]
     if not flock:
-        actions.append({'type': 'move', 'direction': [random.choice([-1,0,1]), random.choice([-1,0,1])]})
-        return actions
+        return [wander]
 
-    # Average position of neighbors (cohesion target)
-    avg_x = sum(a['position'][0] for a in flock) / len(flock)
-    avg_y = sum(a['position'][1] for a in flock) / len(flock)
+    x, y = agent["position"]
+    # Cohesion target: average position of neighbors
+    avg_x = sum(a["position"][0] for a in flock) / len(flock)
+    avg_y = sum(a["position"][1] for a in flock) / len(flock)
 
-    # Separation: avoid nearest bird
-    nearest = min(flock, key=lambda a: abs(a['position'][0] - position[0]) + abs(a['position'][1] - position[1]))
-    nearest_pos = nearest['position']
-    dist_to_nearest = abs(nearest_pos[0] - position[0]) + abs(nearest_pos[1] - position[1])
-
-    dx, dy = 0, 0
-
-    if dist_to_nearest <= 1:
-        # Too close: separate (move away from nearest)
-        dx = 1 if position[0] > nearest_pos[0] else (-1 if position[0] < nearest_pos[0] else 0)
-        dy = 1 if position[1] > nearest_pos[1] else (-1 if position[1] < nearest_pos[1] else 0)
+    # Separation: step away from the nearest bird if it's too close
+    nearest = min(flock, key=lambda a: abs(a["position"][0] - x) + abs(a["position"][1] - y))
+    nx, ny = nearest["position"]
+    if abs(nx - x) + abs(ny - y) <= 1:
+        dx = (x > nx) - (x < nx)
+        dy = (y > ny) - (y < ny)
     else:
-        # Cohesion: move toward flock center
-        dx = 1 if avg_x > position[0] else (-1 if avg_x < position[0] else 0)
-        dy = 1 if avg_y > position[1] else (-1 if avg_y < position[1] else 0)
+        dx = (avg_x > x) - (avg_x < x)
+        dy = (avg_y > y) - (avg_y < y)
 
-    # Add some randomness (alignment noise)
-    if random.random() < 0.2:
-        dx = random.choice([-1, 0, 1])
-        dy = random.choice([-1, 0, 1])
+    # Noise
+    if rng.random() < 0.2:
+        return [wander]
+    return [{"type": "move", "direction": [dx, dy]}]
 
-    actions.append({'type': 'move', 'direction': [dx, dy]})
-    return actions
-"""
 
 spec = {
+    "seed": 3,
     "environment": {
         "type": "grid_2d",
         "dimensions": {"width": 40, "height": 40, "topology": "torus"},
@@ -66,7 +53,6 @@ spec = {
         "bird": {
             "initial_count": 50,
             "initial_state": {"perception_radius": 5},
-            "behavior_code": behavior_code,
         },
     },
 }
@@ -91,7 +77,7 @@ def run_single():
     print("Rules: separation, cohesion, random noise")
     print()
 
-    sim = Simulation(spec)
+    sim = Simulation(spec, behaviors={"bird": bird_behavior})
     collector = DataCollector(
         model_metrics={"avg_neighbors": compute_avg_cluster_size},
     )

@@ -46,3 +46,5 @@ packages = ["agentstan", "agentstan.core", "agentstan.experiment", "agentstan.an
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 python_files = ["test_*.py"]
+# legacy tests exercise behavior_code on purpose; test_core asserts the warning
+filterwarnings = ["ignore:.*behavior_code is deprecated:DeprecationWarning"]

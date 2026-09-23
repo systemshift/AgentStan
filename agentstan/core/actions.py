@@ -19,7 +19,8 @@ class ActionProcessor:
                  logger: EventLogger,
                  behavior_resolver: Optional[Callable[[str], Optional[Callable]]] = None,
                  rng=None, globals: Optional[Dict[str, Any]] = None,
-                 spawner: Optional[Callable[[str, Dict[str, Any]], Agent]] = None):
+                 spawner: Optional[Callable[[str, Dict[str, Any]], Agent]] = None,
+                 type_defaults: Optional[Callable[[str], Dict[str, Any]]] = None):
         """
         Initialize action processor
 
@@ -34,6 +35,8 @@ class ActionProcessor:
             globals: the simulation's shared globals dict (modify_global)
             spawner: callable (agent_type, state_overrides) -> new Agent
                 built from the spec, not yet added (spawn)
+            type_defaults: callable agent_type -> a copy of that type's
+                initial_state (transform fills missing attributes from it)
         """
         self.agent_manager = agent_manager
         self.environment = environment
@@ -42,6 +45,7 @@ class ActionProcessor:
         self.rng = rng if rng is not None else random
         self.globals = globals if globals is not None else {}
         self.spawner = spawner
+        self.type_defaults = type_defaults
 
     def process_actions(self, agent: Optional[Agent], actions: List[Dict[str, Any]],
                         step: int):
@@ -461,6 +465,12 @@ class ActionProcessor:
             {"type": "transform", "new_type": "infected",
              "new_state": {"days_infected": 0}}
 
+        The new agent keeps the old agent's state (position, wealth, ...);
+        attributes it lacks are filled from the new type's initial_state, and
+        ``new_state`` overrides both. So an agent that becomes "infected"
+        gains the infected type's defaults (e.g. recovery_time) without
+        every transform having to repeat them.
+
         Behavior for ``new_type`` is resolved from the simulation spec via
         the ``behavior_resolver`` passed to ``ActionProcessor``. An action may
         override that with an explicit ``behavior_code`` (rare, dynamic case).
@@ -475,7 +485,8 @@ class ActionProcessor:
         old_id = agent.id
 
         # Snapshot state before mutation
-        merged_state = copy.deepcopy(agent.state)
+        merged_state = self.type_defaults(new_type) if self.type_defaults else {}
+        merged_state.update(copy.deepcopy(agent.state))
         merged_state.update(new_state)
 
         # Resolve behavior: action override > spec resolver

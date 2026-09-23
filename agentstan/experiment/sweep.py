@@ -2,7 +2,7 @@
 Parameter sweep: vary one parameter, run multiple times per value.
 """
 
-from typing import Dict, Any, List, Optional
+from typing import Callable, Dict, Any, List, Optional
 from .batch import batch_run
 
 
@@ -16,6 +16,7 @@ def sweep(
     seed: Optional[int] = None,
     max_agents: Optional[int] = None,
     time_limit: Optional[float] = None,
+    behaviors: Optional[Dict[str, Callable]] = None,
 ) -> Dict[Any, List[Dict[str, Any]]]:
     """
     Sweep a single parameter across values with replications.
@@ -27,7 +28,7 @@ def sweep(
         values: List of values to try.
         steps: Steps per run.
         n_runs: Replications per value.
-        max_workers, seed, max_agents, time_limit: as for batch_run.
+        max_workers, seed, max_agents, time_limit, behaviors: as for batch_run.
 
     Returns:
         Dict mapping each value to a list of run results (see batch_run);
@@ -48,6 +49,7 @@ def sweep(
         seed=seed,
         max_agents=max_agents,
         time_limit=time_limit,
+        behaviors=behaviors,
     )
 
     # Group by parameter value

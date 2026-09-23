@@ -2,9 +2,8 @@
 Flexible environment system supporting multiple spatial types and custom properties
 """
 
-import copy
 import random
-from typing import Dict, Any, List, Tuple, Optional, Callable
+from typing import Dict, Any, List, Tuple, Optional
 
 
 class Environment:

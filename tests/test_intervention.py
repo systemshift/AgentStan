@@ -112,3 +112,22 @@ def test_swap_behavior():
 
     # Energy should have increased by ~100 (minus any global decay)
     assert agent.get_attribute("energy") > original_energy + 50
+
+
+def test_added_agents_of_a_rules_type_get_its_behavior_and_defaults():
+    spec = {
+        "environment": {"type": "none"},
+        "agent_types": {
+            "worker": {"initial_count": 0, "initial_state": {"gold": 0, "rate": 2},
+                       "behavior": {"rules": [
+                           {"do": [{"type": "modify_state", "attribute": "gold",
+                                    "delta": "$rate"}]}]}},
+        },
+    }
+    sim = Simulation(spec, seed=0)
+    engine = InterventionEngine(sim)
+    sim.attach_intervention_engine(engine)
+    engine.add_agent("worker", {"rate": 5})
+    sim.run(3)
+    worker = sim.agent_manager.get_agents_by_type("worker")[0]
+    assert worker["gold"] == 15   # acted every step with the override rate

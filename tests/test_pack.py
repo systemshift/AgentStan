@@ -156,12 +156,12 @@ def test_pack_file_is_pure_json(tmp_path):
 def test_deep_validate_catches_runtime_rule_errors():
     spec = {
         "environment": {"type": "none"},
-        "agent_types": {"a": {"initial_count": 1, "initial_state": {},
+        "agent_types": {"a": {"initial_count": 1, "initial_state": {"gold": 1},
                               "behavior": {"rules": [
                                   {"do": [{"type": "modify_state", "attribute": "x",
-                                           "value": {"+": ["$missing", 1]}}]}]}}},
+                                           "value": {"/": ["$gold", 0]}}]}]}}},
     }
     pack = Pack.new("broken-at-runtime", spec)
     pack.validate(deep=True, smoke_steps=0)  # constructs fine
-    with pytest.raises(PackError, match="doesn't have"):
+    with pytest.raises(PackError, match="division by zero"):
         pack.validate(deep=True)

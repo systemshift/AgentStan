@@ -6,7 +6,7 @@ the user's original description.
 """
 
 import json
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, Optional
 
 
 DEFAULT_MODEL = "gpt-5.5"

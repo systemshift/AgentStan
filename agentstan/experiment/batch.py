@@ -5,7 +5,7 @@ Batch runner: run the same model many times with parameter variations.
 import copy
 import json
 import os
-from typing import Dict, Any, List, Optional
+from typing import Callable, Dict, Any, List, Optional
 from concurrent.futures import ProcessPoolExecutor, as_completed
 
 from ..core.simulation import Simulation
@@ -24,9 +24,10 @@ def _set_nested(d: dict, path: str, value: Any) -> dict:
 
 def _run_one(spec: dict, steps: int, run_id: int, params: dict,
              seed: Optional[int] = None, max_agents: Optional[int] = None,
-             time_limit: Optional[float] = None) -> Dict[str, Any]:
+             time_limit: Optional[float] = None,
+             behaviors: Optional[Dict[str, Callable]] = None) -> Dict[str, Any]:
     """Run a single simulation and return results with metadata."""
-    sim = Simulation(spec, seed=seed)
+    sim = Simulation(spec, seed=seed, behaviors=behaviors)
     results = sim.run(steps, max_agents=max_agents, time_limit=time_limit)
     history = results["metrics"]["history"]
     return {
@@ -53,6 +54,7 @@ def batch_run(
     seed: Optional[int] = None,
     max_agents: Optional[int] = None,
     time_limit: Optional[float] = None,
+    behaviors: Optional[Dict[str, Callable]] = None,
 ) -> List[Dict[str, Any]]:
     """
     Run a model many times, optionally varying parameters.
@@ -71,6 +73,8 @@ def batch_run(
             statistically independent. With no seed anywhere, runs are
             unseeded (different every time).
         max_agents, time_limit: per-run resource guards (Simulation.run).
+        behaviors: Python behavior functions (see Simulation). They must be
+            module-level functions so worker processes can import them.
 
     Returns:
         List of result dicts sorted by run_id, each with run_id, seed,
@@ -114,7 +118,8 @@ def batch_run(
     def args_for(job):
         job_spec, rid, params = job
         run_seed = seed + rid if seed is not None else None
-        return (job_spec, steps, rid, params, run_seed, max_agents, time_limit)
+        return (job_spec, steps, rid, params, run_seed, max_agents, time_limit,
+                behaviors)
 
     workers = max_workers or os.cpu_count() or 1
     workers = min(workers, len(jobs)) or 1

@@ -147,3 +147,27 @@ def test_neighbors_found_across_torus_seam():
         a = sim.agent_manager.get_agents_by_type("a")[0]
         near = sim.agent_manager.get_agents_near_agent(a, 4, sim.environment)
         assert [n.type for n in near] == ["b"]
+
+
+def test_behavior_code_is_deprecated_and_python_functions_replace_it():
+    import warnings
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        Simulation(SPEC)
+    assert any("behavior_code is deprecated" in str(w.message) for w in caught)
+
+    def mover(agent, sim_state, nearby):
+        return [{"type": "modify_state", "attribute": "rolls",
+                 "value": sim_state["rng"].randint(1, 6)}]
+
+    spec = {"environment": {"type": "none"},
+            "agent_types": {"die": {"initial_count": 3, "initial_state": {}}}}
+    runs = [Simulation(spec, seed=5, behaviors={"die": mover}) for _ in range(2)]
+    for sim in runs:
+        sim.run(4)
+    rolls = [[a["rolls"] for a in sim.agent_manager.get_living_agents()] for sim in runs]
+    assert rolls[0] == rolls[1]  # seeded through sim_state["rng"]
+
+    import pytest
+    with pytest.raises(ValueError, match="undefined agent types"):
+        Simulation(spec, behaviors={"dice": mover})

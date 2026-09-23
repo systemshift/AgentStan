@@ -7,8 +7,6 @@ a researcher turning knobs mid-experiment.
 """
 
 import json
-import copy
-import random as _random
 import logging
 from typing import Dict, Any, List, Optional
 
@@ -193,17 +191,11 @@ class Steerer:
                 count = min(intervention.get("count", 1), 20)  # cap at 20
                 if not agent_type:
                     continue
-                # Get default state from spec
-                type_spec = self.simulation.spec.get("agent_types", {}).get(agent_type, {})
-                default_state = copy.deepcopy(type_spec.get("initial_state", {"energy": 20}))
-                behavior_code = type_spec.get("behavior_code", "")
-
+                if agent_type not in self.simulation.spec.get("agent_types", {}):
+                    continue
+                # New agents take the type's initial_state and behavior
                 for _ in range(count):
-                    self.intervention_engine.add_agent(
-                        agent_type, default_state,
-                        behavior_code=behavior_code,
-                        source="steerer",
-                    )
+                    self.intervention_engine.add_agent(agent_type, {}, source="steerer")
 
             elif action == "remove_agents":
                 agent_type = intervention.get("agent_type")
@@ -211,7 +203,7 @@ class Steerer:
                 if not agent_type:
                     continue
                 agents = self.simulation.agent_manager.get_agents_by_type(agent_type)
-                to_remove = _random.sample(agents, min(count, len(agents)))
+                to_remove = self.simulation.rng.sample(agents, min(count, len(agents)))
                 for agent in to_remove:
                     self.intervention_engine.remove_agent(agent.id, source="steerer")
 
