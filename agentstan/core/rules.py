@@ -185,7 +185,7 @@ _INTERACT_PARAMS = {
     "energy_gain", "amount",  # legacy aliases (predation / transfer_energy)
 }
 
-_RULE_KEYS = {"when", "prob", "do", "target"}
+_RULE_KEYS = {"when", "prob", "do", "choose", "target"}
 
 
 class RuleError(ValueError):
@@ -235,10 +235,26 @@ def validate_rules(rules: Any, agent_type: str = "?", *,
                 f"{where} has unknown keys {sorted(unknown)} — "
                 f"allowed: {sorted(_RULE_KEYS)}"
             )
-        if "do" not in rule:
-            raise RuleError(f"{where} missing 'do' (list of actions)")
-        if not isinstance(rule["do"], list):
+        if ("do" in rule) == ("choose" in rule):
+            raise RuleError(
+                f"{where} needs exactly one of 'do' (list of actions) or "
+                f"'choose' (weighted branches)"
+            )
+        if "do" in rule and not isinstance(rule["do"], list):
             raise RuleError(f"{where}.do must be a list of action dicts")
+        if "choose" in rule:
+            branches = rule["choose"]
+            if not isinstance(branches, list) or not branches:
+                raise RuleError(
+                    f"{where}.choose must be a non-empty list of "
+                    f"{{'weight': w, 'do': [...]}} branches"
+                )
+            for k, branch in enumerate(branches):
+                if not isinstance(branch, dict) or set(branch) != {"weight", "do"} \
+                        or not isinstance(branch["do"], list):
+                    raise RuleError(
+                        f"{where}.choose[{k}] must be {{'weight': w, 'do': [...]}}"
+                    )
 
         scope = _Scope(globals_, agent_types, has_self=not world,
                        can_sense=not world)
@@ -251,9 +267,44 @@ def validate_rules(rules: Any, agent_type: str = "?", *,
             _validate_expr(rule["when"], f"{where}.when", scope)
         if "prob" in rule:
             _validate_expr(rule["prob"], f"{where}.prob", scope)
-        for j, action in enumerate(rule["do"]):
-            _validate_action(action, f"{where}.do[{j}]", scope,
-                             has_rule_target="target" in rule, world=world)
+        for label, actions in _action_lists(rule):
+            for j, action in enumerate(actions):
+                _validate_action(action, f"{where}.{label}[{j}]", scope,
+                                 has_rule_target="target" in rule, world=world)
+        for k, branch in enumerate(rule.get("choose") or []):
+            _validate_expr(branch["weight"], f"{where}.choose[{k}].weight", scope)
+
+
+def _action_lists(rule: Dict):
+    """(label, actions) for a rule's 'do' list or each 'choose' branch."""
+    if "do" in rule:
+        return [("do", rule["do"])]
+    return [(f"choose[{k}].do", branch["do"])
+            for k, branch in enumerate(rule.get("choose") or [])]
+
+
+def is_expression(value: Any) -> bool:
+    """True for values the engine evaluates: operator dicts and @globals."""
+    if isinstance(value, dict):
+        return len(value) == 1 and next(iter(value)) in _KNOWN_OPS
+    return isinstance(value, str) and value.startswith("@")
+
+
+def validate_initial_state(state: Any, where: str, *,
+                           globals_: Optional[set] = None) -> None:
+    """initial_state values may be expressions evaluated per agent at
+    creation (randomness, globals) — no agent or neighbors exist yet."""
+    if not isinstance(state, dict):
+        raise RuleError(f"{where} must be a dict of attribute -> value")
+    for attr, value in state.items():
+        if is_expression(value):
+            _validate_expr(value, f"{where}.{attr}",
+                           _Scope(globals_, None, has_self=False, can_sense=False))
+
+
+def evaluate_initial_state(state: Dict[str, Any], ctx: "_Context") -> Dict[str, Any]:
+    return {attr: evaluate(value, ctx) if is_expression(value) else value
+            for attr, value in state.items()}
 
 
 def validate_expression(expr: Any, where: str, *,
@@ -821,6 +872,45 @@ def _located(err: Exception, where: str, ctx: _Context) -> RuleError:
     return RuleError(f"{where}: {msg}{hint} [{who}, step {ctx.step}]")
 
 
+def _choose(branches: List[Dict], ctx: _Context) -> List[Dict]:
+    """Pick one branch's actions with probability proportional to weight."""
+    weights = [max(0.0, float(evaluate(b["weight"], ctx) or 0)) for b in branches]
+    total = sum(weights)
+    if total <= 0:
+        return []
+    roll = ctx.rng.random() * total
+    for branch, weight in zip(branches, weights):
+        roll -= weight
+        if roll < 0:
+            return branch["do"]
+    return branches[-1]["do"]
+
+
+def _collapse_repeated_target(rule: Dict) -> Dict:
+    """An action that repeats its rule's target selector means the rule's
+    target. Re-selecting would pick a different agent for a 'random'
+    selector than the one the condition checked."""
+    if "target" not in rule:
+        return rule
+    field_of = {"interact": "target", "move_toward": "target", "move_away": "from"}
+
+    def collapse(actions):
+        out = []
+        for action in actions:
+            field = field_of.get(action.get("type")) if isinstance(action, dict) else None
+            if field and action.get(field) == rule["target"]:
+                action = {k: v for k, v in action.items() if k != field}
+            out.append(action)
+        return out
+
+    rule = dict(rule)
+    if "do" in rule:
+        rule["do"] = collapse(rule["do"])
+    else:
+        rule["choose"] = [dict(b, do=collapse(b["do"])) for b in rule["choose"]]
+    return rule
+
+
 class RuleBehavior:
     """
     A behavior function compiled from declarative rules.
@@ -842,7 +932,7 @@ class RuleBehavior:
             agent_types=set(spec.get("agent_types") or {}) or None,
             world=world,
         )
-        self.rules = rules
+        self.rules = [_collapse_repeated_target(rule) for rule in rules]
         self.simulation = simulation
         self.agent_type = agent_type
         self.world = world
@@ -883,7 +973,8 @@ class RuleBehavior:
                 prob = rule.get("prob")
                 if prob is not None and ctx.rng.random() >= evaluate(prob, ctx):
                     continue
-                for action in rule["do"]:
+                chosen = rule["do"] if "do" in rule else _choose(rule["choose"], ctx)
+                for action in chosen:
                     compiled = _compile_action(action, ctx)
                     if compiled is not None:
                         actions.append(compiled)
@@ -982,14 +1073,21 @@ def check_attribute_reads(spec: Dict[str, Any]) -> None:
                 if owner is not None:
                     carries.append((owner, target))
 
+    def actions_of(rule):
+        if not isinstance(rule, dict):
+            return []
+        out = list(rule.get("do") or [])
+        for branch in rule.get("choose") or []:
+            if isinstance(branch, dict):
+                out += branch.get("do") or []
+        return out
+
     for name, rules in rules_of.items():
         for rule in rules:
-            if isinstance(rule, dict):
-                scan(rule.get("do") or [], name)
+            scan(actions_of(rule), name)
     for key in ("global_rules", "world_rules"):
         for rule in spec.get(key) or []:
-            if isinstance(rule, dict):
-                scan(rule.get("do") or [], None)
+            scan(actions_of(rule), None)
 
     # Transforms carry the old agent's attributes to the new type
     changed = True

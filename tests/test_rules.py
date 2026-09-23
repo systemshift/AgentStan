@@ -77,7 +77,7 @@ def test_validate_rejects_unknown_action():
 
 
 def test_validate_rejects_missing_do():
-    with pytest.raises(RuleError, match="missing 'do'"):
+    with pytest.raises(RuleError, match="exactly one of 'do'"):
         validate_rules([{"when": {">": [1, 0]}}], "fox")
 
 
@@ -165,7 +165,7 @@ def test_rules_spec_is_pure_json():
 
 
 def test_rules_simulation_runs_and_agents_act():
-    sim = Simulation(RULES_SPEC, seed=5)
+    sim = Simulation(dict(RULES_SPEC, log_level="detailed"), seed=5)
     results = sim.run(30)
     events = results["event_summary"]["event_types"]
     assert events.get("agent_action", 0) > 0
@@ -229,6 +229,7 @@ def test_modulo_operator():
 
 def test_event_trace_is_deterministic():
     """Same spec + seed must give a byte-identical event trace."""
-    a = Simulation(RULES_SPEC, seed=3).run(15)
-    b = Simulation(RULES_SPEC, seed=3).run(15)
+    spec = dict(RULES_SPEC, log_level="detailed")
+    a = Simulation(spec, seed=3).run(15)
+    b = Simulation(spec, seed=3).run(15)
     assert json.dumps(a["events"], default=str) == json.dumps(b["events"], default=str)

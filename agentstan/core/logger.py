@@ -8,6 +8,9 @@ for detailed post-simulation analysis.
 from typing import Dict, List, Any, Optional
 
 
+LOG_LEVELS = ("minimal", "normal", "detailed")
+
+
 class EventLogger:
     """
     Centralized event logging for simulations
@@ -21,8 +24,13 @@ class EventLogger:
 
         Args:
             enabled: Whether logging is active
-            log_level: "minimal", "normal", or "detailed"
+            log_level: "minimal" (births and deaths), "normal" (plus
+                interactions and global/environment changes; the default),
+                or "detailed" (plus every agent action and state change —
+                large: several events per agent per step)
         """
+        if log_level not in LOG_LEVELS:
+            raise ValueError(f"log_level must be one of {LOG_LEVELS}, got {log_level!r}")
         self.enabled = enabled
         self.log_level = log_level
         self.events: List[Dict[str, Any]] = []
@@ -50,7 +58,7 @@ class EventLogger:
     def log_agent_action(self, step: int, agent_id: int, agent_type: str,
                         action_type: str, details: Optional[Dict] = None):
         """Log an agent performing an action"""
-        if self.log_level == "minimal":
+        if self.log_level != "detailed":
             return
 
         self.log_event(
@@ -66,6 +74,8 @@ class EventLogger:
                        interaction_type: str, outcome: str,
                        details: Optional[Dict] = None):
         """Log an interaction between agents"""
+        if self.log_level == "minimal":
+            return
         self.log_event(
             step=step,
             event_type="interaction",
@@ -78,7 +88,7 @@ class EventLogger:
     def log_state_change(self, step: int, agent_id: int, attribute: str,
                         old_value: Any, new_value: Any, cause: str = ""):
         """Log a change in agent state"""
-        if self.log_level == "minimal":
+        if self.log_level != "detailed":
             return
 
         self.log_event(

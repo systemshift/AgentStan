@@ -20,8 +20,6 @@ def analyze_events(results: Dict[str, Any]) -> Dict[str, Any]:
         Event analysis dict.
     """
     events = results.get("events", [])
-    if not events:
-        return {"total_events": 0}
 
     report = {
         "total_events": len(events),

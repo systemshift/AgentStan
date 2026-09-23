@@ -367,3 +367,84 @@ def test_pack_with_shared_state_round_trips():
     pack = Pack.new("market", spec)
     pack.validate(deep=True)
     assert json.loads(pack.to_json())["models"]["base"]["globals"] == {"tax": 0}
+
+
+# --- Variation, weighted branches, repeated targets ---
+
+def test_initial_state_expressions_vary_per_agent():
+    spec = {
+        "environment": NONE_ENV,
+        "globals": {"base_gold": 100},
+        "agent_types": {
+            "member": {
+                "initial_count": 60,
+                "initial_state": {"guild": {"choice": ["red", "blue", "green"]},
+                                  "skill": {"uniform": [0, 1]},
+                                  "gold": "@base_gold",
+                                  "inventory": {"sword": 1}},
+            },
+        },
+    }
+    members = _sim(spec, seed=2).agent_manager.get_agents_by_type("member")
+    assert {m["guild"] for m in members} == {"red", "blue", "green"}
+    assert len({m["skill"] for m in members}) == 60
+    assert all(m["gold"] == 100 and m["inventory"] == {"sword": 1} for m in members)
+    again = _sim(spec, seed=2).agent_manager.get_agents_by_type("member")
+    assert [m["skill"] for m in again] == [m["skill"] for m in members]
+
+
+def test_initial_state_cannot_read_an_agent():
+    spec = {"environment": NONE_ENV, "agent_types": {"a": {
+        "initial_count": 1, "initial_state": {"x": {"+": ["$y", 1]}}}}}
+    with pytest.raises(RuleError, match="initial_state.x.*no agent"):
+        _sim(spec)
+
+
+def test_choose_picks_exactly_one_weighted_branch():
+    spec = {
+        "environment": NONE_ENV,
+        "agent_types": {
+            "roller": {
+                "initial_count": 1,
+                "initial_state": {"common": 0, "rare": 0, "pulls": 0},
+                "behavior": {"rules": [
+                    {"do": [{"type": "modify_state", "attribute": "pulls", "delta": 1}]},
+                    {"choose": [
+                        {"weight": 90, "do": [{"type": "modify_state", "attribute": "common", "delta": 1}]},
+                        {"weight": 10, "do": [{"type": "modify_state", "attribute": "rare", "delta": 1}]},
+                    ]},
+                ]},
+            },
+        },
+    }
+    sim = _sim(spec, seed=4)
+    sim.run(2000)
+    roller = sim.agent_manager.get_agents_by_type("roller")[0]
+    assert roller["common"] + roller["rare"] == roller["pulls"] == 2000
+    assert 140 < roller["rare"] < 260  # ~10%
+
+
+def test_action_repeating_the_rule_target_acts_on_the_same_agent():
+    """With a random selector, re-selecting in the action would trade with a
+    different shop than the one the condition checked."""
+    pick = {"random": {"type": "shop"}}
+    spec = {
+        "environment": NONE_ENV,
+        "agent_types": {
+            "buyer": {
+                "initial_count": 1,
+                "initial_state": {"gold": 1000},
+                "behavior": {"rules": [
+                    {"target": pick,
+                     "when": {">": ["&stock", 0]},
+                     "do": [{"type": "interact", "target": pick, "interaction_type": "buy",
+                             "params": {"exchange": {"give": {"gold": 1},
+                                                     "get": {"stock": 1}}}}]},
+                ]},
+            },
+            "shop": {"initial_count": 5, "initial_state": {"stock": 1, "gold": 0}},
+        },
+    }
+    results = _sim(spec, seed=0).run(30)
+    outcomes = [e["outcome"] for e in results["events"] if e["type"] == "interaction"]
+    assert outcomes == ["success"] * 5  # never bought from an empty shop

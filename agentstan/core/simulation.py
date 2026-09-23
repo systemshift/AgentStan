@@ -14,7 +14,9 @@ from .agent import Agent, AgentManager
 from .actions import ActionProcessor
 from .logger import EventLogger
 from .scheduler import RandomScheduler
-from .rules import RuleBehavior, RuleError, validate_expression, check_attribute_reads
+from .rules import (RuleBehavior, RuleError, validate_expression,
+                    check_attribute_reads, validate_initial_state,
+                    evaluate_initial_state, _Context)
 
 log = logging.getLogger("agentstan")
 
@@ -74,14 +76,20 @@ class Simulation:
             rng=self.rng,
             globals=self.globals,
             spawner=self._new_agent,
-            type_defaults=lambda t: copy.deepcopy(
-                self.spec["agent_types"].get(t, {}).get("initial_state", {})),
+            type_defaults=lambda t: evaluate_initial_state(
+                copy.deepcopy(self.spec["agent_types"].get(t, {}).get("initial_state", {})),
+                self._world_context()),
         )
 
         # Compile every behavior up front so a bad spec fails here, not
         # mid-run (and not only for types that happen to have agents).
-        for agent_type in specification["agent_types"]:
+        for agent_type, type_spec in specification["agent_types"].items():
             self.get_behavior(agent_type)
+            validate_initial_state(
+                type_spec.get("initial_state", {}),
+                f"agent_types['{agent_type}'].initial_state",
+                globals_=set(self.globals),
+            )
         if not self._behaviors:
             check_attribute_reads(specification)
 
@@ -251,7 +259,8 @@ class Simulation:
         """Build (but don't add) an agent of a spec type: initial_state plus
         overrides, at a random position unless its state places it."""
         type_spec = self.spec["agent_types"][agent_type]
-        state = copy.deepcopy(type_spec.get("initial_state", {}))
+        state = evaluate_initial_state(
+            copy.deepcopy(type_spec.get("initial_state", {})), self._world_context())
         state.update(copy.deepcopy(overrides or {}))
         agent = Agent(agent_type=agent_type, initial_state=state,
                       behavior_function=self.get_behavior(agent_type))
@@ -436,13 +445,17 @@ class Simulation:
             entry["observables"] = self.evaluate_observables()
         self.metrics["history"].append(entry)
 
+    def _world_context(self) -> _Context:
+        """Expression context with no agent: globals, aggregates, rng."""
+        return _Context(agent=None, nearby=[], rng=self.rng,
+                        env=self.environment, step=self.step,
+                        globals=self.globals, manager=self.agent_manager,
+                        can_sense=False)
+
     def evaluate_observables(self) -> Dict[str, Any]:
         """Current value of every spec observable."""
-        from .rules import _Context, evaluate, _located
-        ctx = _Context(agent=None, nearby=[], rng=self.rng,
-                       env=self.environment, step=self.step,
-                       globals=self.globals, manager=self.agent_manager,
-                       can_sense=False)
+        from .rules import evaluate, _located
+        ctx = self._world_context()
         out = {}
         for name, expr in self.observables.items():
             try:
