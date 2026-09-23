@@ -234,6 +234,12 @@ explanation = interpret(results)
 issues = validate(spec, "wolves should hunt rabbits")
 ```
 
+Every AI helper (`generate`, `interpret`, `validate`, `Steerer`, LLM
+agents) takes `client=` — any OpenAI-compatible client — or `base_url=`,
+so OpenAI, Anthropic's OpenAI-compatible endpoint, or a local server all
+work. Defaults come from `AGENTSTAN_MODEL`, `AGENTSTAN_BASE_URL` and
+`OPENAI_API_KEY`.
+
 ## CLI
 
 ```bash
