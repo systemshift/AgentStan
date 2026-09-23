@@ -51,3 +51,49 @@ def test_sweep():
     )
     assert set(results.keys()) == {5, 10, 15}
     assert all(len(runs) == 2 for runs in results.values())
+
+
+SEEDED = {
+    "seed": 7,
+    "environment": {"type": "none"},
+    "observables": {"total_gold": {"sum": {"attr": "gold"}}},
+    "agent_types": {
+        "miner": {
+            "initial_count": 5,
+            "initial_state": {"gold": 0},
+            "behavior": {"rules": [
+                {"do": [{"type": "modify_state", "attribute": "gold",
+                         "delta": {"randint": [0, 10]}}]},
+            ]},
+        }
+    },
+}
+
+
+def test_spec_seed_gives_distinct_but_reproducible_runs():
+    a = batch_run(SEEDED, n_runs=4, steps=5, max_workers=1)
+    b = batch_run(SEEDED, n_runs=4, steps=5, max_workers=2)  # processes
+    golds = [r["observables"]["total_gold"] for r in a]
+    assert len(set(golds)) > 1                 # not the same run 4 times
+    assert [r["seed"] for r in a] == [7, 8, 9, 10]
+    assert golds == [r["observables"]["total_gold"] for r in b]
+
+
+def test_summarize_distributions():
+    from agentstan.experiment import summarize
+    runs = batch_run(SEEDED, n_runs=10, steps=5, max_workers=1)
+    report = summarize(runs)
+    assert report["runs"] == 10 and report["stopped_early"] == 0
+    gold = report["metrics"]["total_gold"]
+    assert gold["min"] <= gold["p5"] <= gold["median"] <= gold["p95"] <= gold["max"]
+    assert report["metrics"]["miner"]["mean"] == 5
+
+
+def test_sweep_over_a_global():
+    spec = dict(SEEDED, globals={"bonus": 0})
+    spec["agent_types"] = {"miner": {
+        "initial_count": 2, "initial_state": {"gold": 0},
+        "behavior": {"rules": [{"do": [{"type": "modify_state", "attribute": "gold",
+                                        "delta": "@bonus"}]}]}}}
+    grouped = sweep(spec, "globals.bonus", [1, 3], steps=4, n_runs=2, max_workers=1)
+    assert [r["observables"]["total_gold"] for r in grouped[3]] == [24, 24]

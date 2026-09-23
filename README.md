@@ -180,10 +180,12 @@ time_series = collector.get_model_data()
 ### Test — Batch runs and parameter sweeps
 
 ```python
-from agentstan.experiment import batch_run, sweep
+from agentstan.experiment import batch_run, sweep, summarize
 
-# Run 50 times to get statistical confidence (seed makes the batch reproducible)
+# Run 50 times to get statistical confidence (run i uses seed + i, so the
+# batch is reproducible; defaults to the spec's seed)
 results = batch_run(spec, n_runs=50, steps=200, seed=1000)
+print(summarize(results)["metrics"])   # mean / std / p5 / median / p95 per metric
 
 # Sweep a parameter
 results = sweep(spec, param="agent_types.wolf.initial_count", values=range(5, 50, 5), n_runs=10)
@@ -228,15 +230,16 @@ issues = validate(spec, "wolves should hunt rabbits")
 ## CLI
 
 ```bash
-# Run from spec file
-agentstan --from-spec ecosystem.json --steps 200
-
-# Batch run
-agentstan --from-spec ecosystem.json --batch 50 --analyze
-
-# Generate from natural language (requires agentstan[ai])
-agentstan "simulate ants foraging for food" --steps 300
+agentstan run model.json                     # a spec or a .pack.json
+agentstan run economy.pack.json gold-rush    # a pack scenario
+agentstan validate economy.pack.json         # construct + smoke-run everything
+agentstan batch model.json --runs 50 --vary globals.tax=0.05,0.1,0.2
+agentstan generate "a F2P economy with a gold sink" -o economy.pack.json   # needs agentstan[ai]
 ```
+
+`batch` prints the distribution (mean, p5, p95) of every observable and
+agent count for each parameter combination; runs execute in parallel
+processes and are reproducible from the spec's seed.
 
 ## Architecture
 

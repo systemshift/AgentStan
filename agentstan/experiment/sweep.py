@@ -2,7 +2,7 @@
 Parameter sweep: vary one parameter, run multiple times per value.
 """
 
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Optional
 from .batch import batch_run
 
 
@@ -12,28 +12,32 @@ def sweep(
     values: list,
     steps: int = 200,
     n_runs: int = 10,
-    max_workers: int = 4,
+    max_workers: Optional[int] = None,
+    seed: Optional[int] = None,
+    max_agents: Optional[int] = None,
+    time_limit: Optional[float] = None,
 ) -> Dict[Any, List[Dict[str, Any]]]:
     """
     Sweep a single parameter across values with replications.
 
     Args:
         spec: Base simulation specification.
-        param: Dot-path to the parameter (e.g. "agent_types.wolf.initial_count").
+        param: Dot-path to the parameter (e.g. "agent_types.wolf.initial_count"
+            or "globals.tax_rate").
         values: List of values to try.
         steps: Steps per run.
         n_runs: Replications per value.
-        max_workers: Parallel threads.
+        max_workers, seed, max_agents, time_limit: as for batch_run.
 
     Returns:
-        Dict mapping each value to a list of run results.
+        Dict mapping each value to a list of run results (see batch_run);
+        pass a list to experiment.summarize for distributions.
 
     Example:
         results = sweep(spec, "agent_types.wolf.initial_count",
                         values=[5, 10, 15, 20], n_runs=10)
         for val, runs in results.items():
-            avg_wolves = sum(r["summary"]["final_counts"].get("wolf", 0) for r in runs) / len(runs)
-            print(f"wolves={val}: avg final = {avg_wolves:.1f}")
+            print(val, summarize(runs)["metrics"]["wolf"]["mean"])
     """
     all_results = batch_run(
         spec,
@@ -41,14 +45,14 @@ def sweep(
         steps=steps,
         vary={param: list(values)},
         max_workers=max_workers,
+        seed=seed,
+        max_agents=max_agents,
+        time_limit=time_limit,
     )
 
     # Group by parameter value
     grouped: Dict[Any, List[Dict[str, Any]]] = {}
     for result in all_results:
-        val = result["params"].get(param)
-        if val not in grouped:
-            grouped[val] = []
-        grouped[val].append(result)
+        grouped.setdefault(result["params"].get(param), []).append(result)
 
     return grouped

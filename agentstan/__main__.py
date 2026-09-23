@@ -1,5 +1,11 @@
 """
-CLI entry point: python -m agentstan "simulate wolves and rabbits"
+Command line interface.
+
+    agentstan run model.json                    # a spec or a .pack.json
+    agentstan run economy.pack.json gold-rush   # a pack scenario
+    agentstan validate economy.pack.json        # full engine validation
+    agentstan batch model.json --runs 50 --vary globals.tax=0.05,0.1,0.2
+    agentstan generate "a F2P economy with a gold sink" -o economy.pack.json
 """
 
 import argparse
@@ -7,111 +13,187 @@ import json
 import sys
 
 
-def main():
-    parser = argparse.ArgumentParser(
-        prog="agentstan",
-        description="AgentStan: AI-native agent-based modeling. Simulate, Test, Analyze, Narrate.",
-    )
-    parser.add_argument("prompt", nargs="?", help="Natural language simulation description")
-    parser.add_argument("--model", default="gpt-5.5", help="OpenAI model (default: gpt-5.5)")
-    parser.add_argument("--steps", type=int, default=200, help="Simulation steps (default: 200)")
-    parser.add_argument("--output", "-o", default=None, help="Output file (JSON)")
-    parser.add_argument("--from-spec", default=None, help="Run from existing spec JSON file")
-    parser.add_argument("--batch", type=int, default=None, help="Run N times (batch mode)")
-    parser.add_argument("--analyze", action="store_true", help="Run population analysis on results")
+def _load(path):
+    """(pack, None) for a pack file, (None, spec) for a bare spec."""
+    from .pack import Pack
 
-    args = parser.parse_args()
-
-    if args.from_spec:
-        _run_from_spec(args)
-    elif args.prompt:
-        _run_from_prompt(args)
-    else:
-        parser.print_help()
-        sys.exit(1)
+    with open(path) as f:
+        data = json.load(f)
+    if isinstance(data, dict) and data.get("format") == "agentstan-pack":
+        return Pack(data), None
+    return None, data
 
 
-def _run_from_spec(args):
+def _resolve(args):
+    """The runnable spec for a file + optional target, and its step count."""
+    pack, spec = _load(args.file)
+    if pack is not None:
+        spec = pack.spec(args.target)
+    elif args.target:
+        sys.exit("error: a target (model/scenario name) needs a pack file")
+    steps = args.steps or spec.pop("steps", None) or 200
+    spec.pop("steps", None)
+    return spec, steps
+
+
+def _parse_vary(items):
+    """["a.b=1,2,3", ...] -> {"a.b": [1, 2, 3]} (values parsed as JSON)."""
+    vary = {}
+    for item in items or []:
+        if "=" not in item:
+            sys.exit(f"error: --vary expects path=v1,v2,... got {item!r}")
+        path, raw = item.split("=", 1)
+        values = []
+        for token in raw.split(","):
+            try:
+                values.append(json.loads(token))
+            except json.JSONDecodeError:
+                values.append(token)
+        vary[path] = values
+    return vary
+
+
+def _fmt(v):
+    if isinstance(v, float):
+        return f"{v:,.2f}" if abs(v) < 1e4 else f"{v:,.0f}"
+    return f"{v:,}" if isinstance(v, int) else str(v)
+
+
+def _print_final(results):
+    summary = results["summary"]
+    print(f"steps: {results['final_step']}   seed: {results['seed']}")
+    if results.get("stopped"):
+        stop = results["stopped"]
+        print(f"stopped early at step {stop['at_step']}: {stop['reason']}")
+    print("agents: " + ", ".join(f"{t}={n}" for t, n in summary["final_counts"].items()))
+    history = results["metrics"]["history"]
+    final = history[-1] if history else {}
+    for label, row in (("observables", final.get("observables")),
+                       ("globals", results.get("globals"))):
+        if row:
+            print(f"{label}: " + ", ".join(f"{k}={_fmt(v)}" for k, v in row.items()))
+
+
+def cmd_run(args):
     from .core.simulation import Simulation
 
-    with open(args.from_spec) as f:
-        spec = json.load(f)
-
-    steps = args.steps or spec.pop("steps", 200)
-
-    if args.batch:
-        from .experiment import batch_run
-        print(f"Batch running {args.batch} times, {steps} steps each...")
-        results_list = batch_run(spec, n_runs=args.batch, steps=steps)
-        _output_batch(results_list, args)
-    else:
-        sim = Simulation(spec)
-        print(f"Running {steps} steps...")
-        results = sim.run(steps)
-        _output_single(results, args)
-
-
-def _run_from_prompt(args):
-    from .ai.generate import generate
-
-    print(f"Generating simulation from: \"{args.prompt}\"")
-    spec = generate(args.prompt, model=args.model)
-
-    name = spec.get("metadata", {}).get("name", "Simulation")
-    agent_types = list(spec.get("agent_types", {}).keys())
-    print(f"Created: {name} ({', '.join(agent_types)})")
-
-    if args.batch:
-        from .experiment import batch_run
-        print(f"Batch running {args.batch} times, {args.steps} steps each...")
-        results_list = batch_run(spec, n_runs=args.batch, steps=args.steps)
-        _output_batch(results_list, args)
-    else:
-        from .core.simulation import Simulation
-        sim = Simulation(spec)
-        print(f"Running {args.steps} steps...")
-        results = sim.run(args.steps)
-        _output_single(results, args)
-
-
-def _output_single(results, args):
-    summary = results.get("summary", {})
-    print(f"Final: {summary.get('final_counts', {})}")
-
-    if args.analyze:
-        from .analysis.population import analyze
-        report = analyze(results)
-        for agent_type, info in report.get("agent_types", {}).items():
-            print(f"  {agent_type}: {info.get('stability', '?')}", end="")
-            if info.get("period"):
-                print(f" (period ~{info['period']})", end="")
-            if info.get("extinct"):
-                print(f" EXTINCT at step {info['extinction_step']}", end="")
-            print()
-
+    spec, steps = _resolve(args)
+    sim = Simulation(spec, seed=args.seed)
+    results = sim.run(steps, max_agents=args.max_agents, time_limit=args.time_limit)
+    _print_final(results)
     if args.output:
         with open(args.output, "w") as f:
             json.dump(results, f, indent=2, default=str)
-        print(f"Saved to {args.output}")
+        print(f"results written to {args.output}")
 
 
-def _output_batch(results_list, args):
-    # Aggregate summaries
-    from collections import Counter
-    all_types = set()
-    for r in results_list:
-        all_types.update(r["summary"]["final_counts"].keys())
+def cmd_validate(args):
+    from .core.simulation import Simulation
 
-    for t in sorted(all_types):
-        finals = [r["summary"]["final_counts"].get(t, 0) for r in results_list]
-        avg = sum(finals) / len(finals)
-        extinct = sum(1 for f in finals if f == 0)
-        print(f"  {t}: avg={avg:.1f}, extinct in {extinct}/{len(finals)} runs")
+    pack, spec = _load(args.file)
+    try:
+        if pack is not None:
+            pack.validate(deep=True, smoke_steps=args.smoke_steps)
+            names = pack.models + pack.scenarios
+        else:
+            Simulation.check(spec, smoke_steps=args.smoke_steps)
+            names = ["spec"]
+    except Exception as e:
+        print(f"invalid: {e}")
+        sys.exit(1)
+    print(f"ok: {', '.join(names)}")
 
+
+def cmd_batch(args):
+    from .experiment import batch_run, summarize
+
+    spec, steps = _resolve(args)
+    vary = _parse_vary(args.vary)
+    runs = batch_run(spec, n_runs=args.runs, steps=steps, vary=vary or None,
+                     seed=args.seed, max_workers=args.workers,
+                     max_agents=args.max_agents, time_limit=args.time_limit)
+
+    groups = {}
+    for run in runs:
+        key = tuple(sorted(run["params"].items()))
+        groups.setdefault(key, []).append(run)
+
+    for key, group in groups.items():
+        if key:
+            print(", ".join(f"{p}={_fmt(v)}" for p, v in key))
+        report = summarize(group)
+        print(f"  {report['runs']} runs"
+              + (f", {report['stopped_early']:.0%} stopped early" if report["stopped_early"] else ""))
+        for name, stats in report["metrics"].items():
+            print(f"  {name:<24} mean {_fmt(stats['mean']):>12}   "
+                  f"p5 {_fmt(stats['p5']):>12}   p95 {_fmt(stats['p95']):>12}")
     if args.output:
         with open(args.output, "w") as f:
-            json.dump(results_list, f, indent=2, default=str)
-        print(f"Saved {len(results_list)} results to {args.output}")
+            json.dump(runs, f, indent=2, default=str)
+        print(f"results written to {args.output}")
+
+
+def cmd_generate(args):
+    from .ai.generate import generate
+    from .pack import Pack
+
+    spec = generate(args.prompt, model=args.model)
+    name = spec.get("metadata", {}).get("name") or "model"
+    pack = Pack.new(name, spec, description=spec.get("metadata", {}).get("description", ""))
+    text = pack.to_json()
+    if args.output:
+        with open(args.output, "w") as f:
+            f.write(text)
+        print(f"{name}: written to {args.output} "
+              f"(agents: {', '.join(spec['agent_types'])})")
+    else:
+        print(text)
+
+
+def build_parser():
+    parser = argparse.ArgumentParser(
+        prog="agentstan",
+        description="AgentStan: declarative agent-based modeling.",
+    )
+    sub = parser.add_subparsers(dest="command", required=True)
+
+    def add_run_args(p):
+        p.add_argument("file", help="spec JSON or .pack.json")
+        p.add_argument("target", nargs="?", help="model or scenario name (packs)")
+        p.add_argument("--steps", type=int, help="steps (default: the spec's, else 200)")
+        p.add_argument("--seed", type=int, help="seed (default: the spec's)")
+        p.add_argument("--max-agents", type=int, help="stop if the population exceeds this")
+        p.add_argument("--time-limit", type=float, help="stop after this many seconds")
+        p.add_argument("--output", "-o", help="write full results JSON here")
+
+    p = sub.add_parser("run", help="run a model once")
+    add_run_args(p)
+    p.set_defaults(func=cmd_run)
+
+    p = sub.add_parser("validate", help="validate a spec or pack (constructs and smoke-runs)")
+    p.add_argument("file")
+    p.add_argument("--smoke-steps", type=int, default=10)
+    p.set_defaults(func=cmd_validate)
+
+    p = sub.add_parser("batch", help="run many times and summarize distributions")
+    add_run_args(p)
+    p.add_argument("--runs", type=int, default=20, help="runs per parameter combination")
+    p.add_argument("--vary", action="append", metavar="PATH=V1,V2",
+                   help="dot-path parameter values (repeatable)")
+    p.add_argument("--workers", type=int, help="worker processes (default: CPUs)")
+    p.set_defaults(func=cmd_batch)
+
+    p = sub.add_parser("generate", help="generate a model from a description (needs agentstan[ai])")
+    p.add_argument("prompt")
+    p.add_argument("--model", default="gpt-5.5", help="LLM model name")
+    p.add_argument("--output", "-o", help="write the pack here (default: stdout)")
+    p.set_defaults(func=cmd_generate)
+    return parser
+
+
+def main(argv=None):
+    args = build_parser().parse_args(argv)
+    args.func(args)
 
 
 if __name__ == "__main__":
