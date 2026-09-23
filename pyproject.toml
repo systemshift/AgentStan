@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "agentstan"
-version = "0.1.0"
-description = "AI-native agent-based modeling framework. Simulate, Test, Analyze, Narrate."
+dynamic = ["version"]
+description = "Declarative agent-based modeling: models are pure JSON, runs are deterministic, LLMs can author them."
 readme = "README.md"
 requires-python = ">=3.9"
 license = {file = "LICENSE"}
@@ -16,6 +16,11 @@ classifiers = [
     "Intended Audience :: Science/Research",
     "License :: OSI Approved :: BSD License",
     "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
     "Topic :: Scientific/Engineering",
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]
@@ -40,8 +45,11 @@ agentstan = "agentstan.__main__:main"
 Homepage = "https://github.com/systemshift/agentstan"
 Repository = "https://github.com/systemshift/agentstan"
 
-[tool.setuptools]
-packages = ["agentstan", "agentstan.core", "agentstan.experiment", "agentstan.analysis", "agentstan.ai"]
+[tool.setuptools.packages.find]
+include = ["agentstan*"]
+
+[tool.setuptools.dynamic]
+version = {attr = "agentstan.__version__"}
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
